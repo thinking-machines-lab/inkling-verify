@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inkling-vendor-verifier"
+version = "0.1.0"
+description = "Shared evaluation workloads for model-serving API implementations"
+requires-python = ">=3.12"
+dynamic = ["dependencies"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=1", "ruff>=0.12"]
+
+[project.scripts]
+swe-bench = "inkling_vendor_verifier.benchmarks.swe_bench:main"
+mmmu-pro = "inkling_vendor_verifier.benchmarks.mmmu_pro:main"
+hle = "inkling_vendor_verifier.benchmarks.hle:main"
+niah = "inkling_vendor_verifier.benchmarks.niah:main"
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+include = ["inkling_vendor_verifier*"]
+
+[tool.setuptools.package-data]
+"inkling_vendor_verifier.benchmarks" = ["swe_signal_selection.json"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
