@@ -277,7 +277,6 @@ class DockerSandbox:
         self, image: str, environment: dict[str, Any], env: dict[str, str]
     ) -> None:
         if self.separate:
-            # Preserve offline Rust caches and enable Node readline's mocked keypresses.
             env = env | {"CARGO_CACHE_AUTO_CLEAN_FREQUENCY": "never", "TERM": "xterm-256color"}
         flags = [flag for key, value in env.items() for flag in ("--env", f"{key}={value}")]
         await self._docker(
@@ -395,7 +394,6 @@ class DockerSandbox:
         await self._docker("cp", self.name + ":/logs/artifacts/model.patch", str(candidate))
         if candidate.is_symlink() or not candidate.is_file():
             raise RuntimeError("DeepSWE patch collection must produce a regular file")
-        # Only the collected patch crosses into the pristine verifier environment.
         await self._docker("rm", "--force", self.name)
         self._created.remove(("container", self.name))
         self.name += "-verifier"

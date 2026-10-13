@@ -7,9 +7,9 @@ from dataclasses import asdict
 import pytest
 
 from inkling_vendor_verifier import cli
+from inkling_vendor_verifier.benchmarks import deepswe, niah
 from inkling_vendor_verifier.benchmarks import hle as hle
 from inkling_vendor_verifier.benchmarks import mmmu_pro as mmmu
-from inkling_vendor_verifier.benchmarks import niah
 from inkling_vendor_verifier.benchmarks import swe_bench as swe
 from inkling_vendor_verifier.types import Example, Generation
 
@@ -23,7 +23,7 @@ BENCHMARKS = (
     (swe, swe.SWEBench, "verified"),
     (swe, swe.SWEBench, "pro"),
     (swe, swe.SWEBench, "multilingual"),
-    (swe, swe.SWEBench, "deepswe"),
+    (deepswe, deepswe.DeepSWE, None),
 )
 
 
@@ -120,6 +120,9 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
         ),
         (hle, ["--bundle", "tasks.tar.gz"], "unrecognized arguments: --bundle"),
         (mmmu, ["--bundle", "tasks.tar.gz"], "unrecognized arguments: --bundle"),
+        (deepswe, ["--bundle", "tasks.tar.gz"], "unrecognized arguments: --bundle"),
+        (deepswe, ["--subset", "deepswe"], "unrecognized arguments: --subset"),
+        (swe, ["--subset", "deepswe"], "invalid choice: 'deepswe'"),
     ],
 )
 def test_bundle_argument_is_required_only_for_swe_prepare(
@@ -236,7 +239,12 @@ def evaluation(monkeypatch, tmp_path):
 @pytest.mark.parametrize("api", cli.APIS)
 @pytest.mark.parametrize(
     "benchmark,concurrency,max_tokens",
-    [(hle.HLE(), 64, 131072), (mmmu.MMMUPro(), 64, 131072), (swe.SWEBench(), 32, 262144)],
+    [
+        (hle.HLE(), 64, 131072),
+        (mmmu.MMMUPro(), 64, 131072),
+        (swe.SWEBench(), 32, 262144),
+        (deepswe.DeepSWE(), 32, 262144),
+    ],
 )
 async def test_cli_records_dataset_and_endpoint_without_secrets_and_marks_smoke(
     monkeypatch, capsys, evaluation, api, benchmark, concurrency, max_tokens
@@ -293,18 +301,34 @@ async def test_missing_api_key_fails_before_provider_creation(monkeypatch, evalu
 
 
 @pytest.mark.parametrize(
-    "arguments,expected_api,expected_url,expected_key_env,expected_temperature",
+    "candidate_api,arguments,expected_api,expected_url,expected_key_env,expected_generation",
     [
-        ([], None, None, None, None),
         (
+            "openai-completions",
+            [],
+            None,
+            None,
+            None,
+            Generation(32768, temperature=None, top_p=None, reasoning_effort="none"),
+        ),
+        (
+            "openai-completions",
             ["--judge-model", "judge"],
             "openai-completions",
             "https://candidate/v1",
             "CANDIDATE_KEY",
-            0,
+            Generation(32768, temperature=0, reasoning_effort="none"),
         ),
-        (["--judge-api", "anthropic", "--judge-model", "judge"], "anthropic", None, None, 0),
         (
+            "openai-completions",
+            ["--judge-api", "anthropic", "--judge-model", "judge"],
+            "anthropic",
+            None,
+            None,
+            Generation(32768, temperature=0, reasoning_effort="none"),
+        ),
+        (
+            "openai-completions",
             [
                 "--judge-base-url",
                 "https://judge/v1",
@@ -316,12 +340,35 @@ async def test_missing_api_key_fails_before_provider_creation(monkeypatch, evalu
             "openai-completions",
             "https://judge/v1",
             "JUDGE_KEY",
+            Generation(32768, temperature=None, reasoning_effort="none"),
+        ),
+        (
+            "anthropic",
+            [
+                "--judge-max-output-tokens",
+                "17",
+                "--judge-temperature",
+                "0.25",
+                "--judge-top-p",
+                "none",
+                "--judge-reasoning-effort",
+                "default",
+            ],
             None,
+            None,
+            None,
+            Generation(17, temperature=0.25, top_p=None, reasoning_effort=None),
         ),
     ],
 )
 def test_hle_cli_resolves_judge_independently(
-    monkeypatch, arguments, expected_api, expected_url, expected_key_env, expected_temperature
+    monkeypatch,
+    candidate_api,
+    arguments,
+    expected_api,
+    expected_url,
+    expected_key_env,
+    expected_generation,
 ):
     captured = {}
 
@@ -337,7 +384,7 @@ def test_hle_cli_resolves_judge_independently(
             "hle.py",
             "run",
             "--api",
-            "openai-completions",
+            candidate_api,
             "--model",
             "candidate",
             "--base-url",
@@ -365,46 +412,7 @@ def test_hle_cli_resolves_judge_independently(
         assert judge.api_key_env == expected_key_env
         assert judge.extra_body is None
         assert judge.model == ("judge" if "--judge-model" in arguments else "candidate")
-    generation = captured["judge_generation"]
-    assert generation.temperature == expected_temperature
-    assert generation.top_p == (None if judge is None else 1)
-    assert generation.max_tokens == 32768
-    assert generation.reasoning_effort == "none"
-
-
-def test_hle_cli_accepts_judge_generation_overrides(monkeypatch):
-    async def evaluate(benchmark, args, **kwargs):
-        generation = kwargs["judge_generation"]
-        assert generation.max_tokens == 17
-        assert generation.temperature == 0.25
-        assert generation.top_p is None
-        assert generation.reasoning_effort is None
-        assert kwargs["judge_args"] is None
-
-    monkeypatch.setattr(hle, "evaluate", evaluate)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "hle.py",
-            "run",
-            "--api",
-            "anthropic",
-            "--model",
-            "candidate",
-            "--output",
-            "results",
-            "--judge-max-output-tokens",
-            "17",
-            "--judge-temperature",
-            "0.25",
-            "--judge-top-p",
-            "none",
-            "--judge-reasoning-effort",
-            "default",
-        ],
-    )
-    hle.main()
+    assert captured["judge_generation"] == expected_generation
 
 
 @pytest.mark.parametrize("top_p", ["0", "1.1"])

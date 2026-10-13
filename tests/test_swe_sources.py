@@ -6,6 +6,7 @@ import tomllib
 import pytest
 
 from inkling_vendor_verifier.benchmarks import swe_sources as sources
+from inkling_vendor_verifier.benchmarks.deepswe import DeepSWE
 from inkling_vendor_verifier.benchmarks.swe_bench import SWEBench
 from inkling_vendor_verifier.sandbox import phase_hosts
 
@@ -137,9 +138,16 @@ def test_prepare_preserves_source_order_and_assets_and_omits_solutions(
     tmp_path, public_source, subset
 ):
     tasks, calls, _, _ = public_source
-    directory = sources.prepare_source(tmp_path, subset)
+    benchmark = DeepSWE() if subset == "deepswe" else SWEBench(subset)
+    directory = (
+        benchmark.prepare(tmp_path)
+        if isinstance(benchmark, DeepSWE)
+        else sources.prepare_source(tmp_path, subset)
+    )
     download_calls = len(calls)
-    examples = SWEBench(subset).load(tmp_path)
+    examples = benchmark.load(tmp_path)
+    assert directory == tmp_path / benchmark.cache_name
+    assert json.loads((directory / "manifest.json").read_text())["benchmark"] == benchmark.name
     assert len(calls) == download_calls
     assert [example.id for example in examples] == [task["name"] for task in tasks]
     assert all(example.messages[0].text == "Fix the original bug." for example in examples)
@@ -149,6 +157,7 @@ def test_prepare_preserves_source_order_and_assets_and_omits_solutions(
     assert (task / "tests/config.json").read_bytes() == b'{"original_grader": true}'
     config = tomllib.loads((task / "task.toml").read_text())
     if subset == "deepswe":
+        assert benchmark.name == "deepswe"
         assert (task / "task.toml").read_bytes() == DEEPSWE_CONFIG
         assert not (task / "environment/Dockerfile").exists()
         assert phase_hosts(config, "agent") == phase_hosts(config, "verifier") == []
@@ -284,3 +293,5 @@ def test_full_suite_pins_and_default_signal_are_distinct():
     }
     with pytest.raises(ValueError, match="Unknown SWE-bench subset"):
         SWEBench("all")
+    with pytest.raises(ValueError, match="Unknown SWE-bench subset"):
+        SWEBench("deepswe")

@@ -6,7 +6,8 @@ grading are shared across APIs. Each API adapter is shared across all benchmarks
 
 | Script | Subsets / cases | Grading |
 | --- | --- | --- |
-| `swe_bench.py` | Signal (250), full Verified (500), Pro v1 (731), Multilingual (300), DeepSWE v1.1 (113) | Each task's executable tests after native bash tool calls |
+| `swe_bench.py` | Signal (250), full Verified (500), Pro v1 (731), Multilingual (300) | Each task's executable tests after native bash tool calls |
+| `deepswe.py` | DeepSWE v1.1 (113) | Committed patch tested in a fresh offline container |
 | `mmmu_pro.py` | Vision, Standard-4, Standard-10 (1,730 each) | Local multiple-choice answer extraction |
 | `hle.py` | Text-only HLE (2,158) | Structured JSON judgment, with a configurable judge |
 | `niah.py` | UUID needle retrieval: 5 context lengths × 11 depths × 10 samples | Case-insensitive UUID substring in the visible answer |
@@ -20,9 +21,9 @@ tool-call state; manually constructed assistant history is unsupported.
 
 ## Install
 
-Python 3.12 or newer on Linux or macOS is required. SWE also needs a local Linux
-Docker daemon with access to the task image registries (Docker Hub and, for
-DeepSWE, public ECR). Its task images
+Python 3.12 or newer on Linux or macOS is required. SWE-bench and DeepSWE also need
+a local Linux Docker daemon with access to the task image registries (Docker Hub
+and, for DeepSWE, public ECR). Their task images
 target Linux x86-64; use an x86-64 host for benchmark runs. No GPUs are required
 on the client host.
 
@@ -41,6 +42,7 @@ For an editable installation, use:
 ```bash
 python -m pip install -e .
 swe-bench --help
+deepswe --help
 mmmu-pro --help
 hle --help
 niah --help
@@ -60,7 +62,7 @@ python mmmu_pro.py prepare --subset standard-10
 python swe_bench.py prepare --subset verified
 python swe_bench.py prepare --subset pro
 python swe_bench.py prepare --subset multilingual
-python swe_bench.py prepare --subset deepswe
+python deepswe.py prepare
 
 # Accept the cais/hle dataset terms on Hugging Face and authenticate first.
 export HF_TOKEN=...
@@ -122,12 +124,14 @@ omits reference solutions, and records file checksums. These source tasks retain
 their upstream timeouts and public internet policy. Their Docker base-image tags
 are upstream tags and can move; only the Signal bundle pins base-image digests.
 
-`deepswe` includes all 113 tasks from the public
+DeepSWE includes all 113 tasks from the public
 [Datacurve DeepSWE v1.1 release](https://github.com/datacurve-ai/deep-swe/tree/0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea).
 Preparation verifies the pinned Git tree and blobs, excludes reference solutions,
 and preserves the task instructions, collection hooks and graders. Solver images
 use upstream tags; verifier images are built from the pinned `tests/Dockerfile`.
 Image pulls and builds need network access; both execution phases run offline.
+Its cache is `data/deepswe`; if you prepared the former `data/swe-bench-deepswe`
+cache, prepare it again with `python deepswe.py prepare`.
 
 ## Run
 
@@ -151,15 +155,17 @@ python hle.py run \
   --base-url https://VENDOR --output results/anthropic-hle
 ```
 
-Replace `hle.py` with `mmmu_pro.py`, `swe_bench.py`, or `niah.py` for another
-benchmark; the API options do not change. Pass the same `--subset` used
-for preparation, for example:
+Replace `hle.py` with `mmmu_pro.py`, `swe_bench.py`, `deepswe.py`, or `niah.py` for
+another benchmark; the API options do not change. For SWE-bench and MMMU-Pro,
+pass the same `--subset` used for preparation:
 
 ```bash
 python swe_bench.py run --subset verified \
   --api openai-completions --model MODEL --output results/verified
 python mmmu_pro.py run --subset standard-10 \
   --api anthropic --model MODEL --output results/standard-10
+python deepswe.py run \
+  --api openai-completions --model MODEL --output results/deepswe
 ```
 
 `openai-completions` means
@@ -181,7 +187,7 @@ format require a new output directory.
 
 ### Generation settings and compatibility
 
-| Setting | SWE-bench (all subsets) | MMMU-Pro (all subsets) / HLE candidate |
+| Setting | SWE-bench / DeepSWE | MMMU-Pro (all subsets) / HLE candidate |
 | --- | --- | --- |
 | Samples per case | 1 | 1 |
 | Temperature / top-p | 1 / 1 | 1 / 1 |
@@ -278,7 +284,7 @@ the prepared prompt, their rendering overhead, and the chosen output budget;
 requests are never truncated to fit. A complete run also writes `grid.json` with
 accuracy by context length and depth, alongside the shared run artifacts.
 
-### SWE execution
+### SWE-bench and DeepSWE execution
 
 Each case builds or pulls its prepared environment, runs a bash-only agent, then runs the
 task's verifier. Limits are 4,096 turns, 4,096 tool calls, the configured output
@@ -344,7 +350,8 @@ cancel the run and leave its coverage explicitly incomplete.
 ## Code and validation
 
 ```text
-swe_bench.py      SWE-bench Signal, full source subsets and DeepSWE
+swe_bench.py      SWE-bench Signal and full source subsets
+deepswe.py        DeepSWE v1.1 with offline solving and separate grading
 mmmu_pro.py       MMMU-Pro Vision and standard subsets
 hle.py            HLE with self-judging or an independent judge
 niah.py           Long-context UUID needle retrieval
@@ -354,6 +361,7 @@ inkling_vendor_verifier/
   runner.py        concurrency, recordings, resume and score accounting
   cli.py           common prepare/run commands
   benchmarks/      one implementation of each benchmark
+  code_agent.py    shared bash agent loop for SWE-bench and DeepSWE
   sandbox.py       SWE container lifecycle and grading
   _proxy.py        task network allowlists
 ```
@@ -365,7 +373,7 @@ python -m ruff check .
 python -m ruff format --check .
 ```
 
-Tests exercise all twelve benchmark/API combinations through the official SDKs
+Tests exercise all fifteen benchmark/API combinations through the official SDKs
 with mocked HTTP responses, including native reasoning state across tool turns,
 unchanged image payloads and strict judgment. Separate-judge tests cover
 independent configuration, request recording and failure accounting.

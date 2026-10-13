@@ -6,7 +6,9 @@ import tarfile
 
 import pytest
 
+from inkling_vendor_verifier import code_agent
 from inkling_vendor_verifier.benchmarks import swe_bench as swe
+from inkling_vendor_verifier.benchmarks.deepswe import DeepSWE
 from inkling_vendor_verifier.sandbox import CommandResult
 from inkling_vendor_verifier.types import (
     Example,
@@ -60,7 +62,7 @@ class Provider:
 @pytest.fixture
 def task(monkeypatch):
     sandbox = Sandbox()
-    monkeypatch.setattr(swe, "DockerSandbox", lambda *args: sandbox)
+    monkeypatch.setattr(code_agent, "DockerSandbox", lambda *args: sandbox)
     example = Example(
         "task",
         (Message("user", (Text("fix the bug"),)),),
@@ -81,13 +83,13 @@ def task(monkeypatch):
         ("timeout", 0, 0),
     ],
 )
-@pytest.mark.parametrize("subset", ["signal", "deepswe"])
+@pytest.mark.parametrize("benchmark", [swe.SWEBench(), DeepSWE()])
 async def test_limits_preserve_each_benchmarks_grading_contract(
-    task, tmp_path, monkeypatch, limit, tool_count, executed, subset
+    task, tmp_path, monkeypatch, limit, tool_count, executed, benchmark
 ):
     example, sandbox = task
-    monkeypatch.setattr(swe, "MAX_TURNS", 1 if limit == "max_turns" else 2)
-    monkeypatch.setattr(swe, "MAX_TOOL_CALLS", 1 if limit == "max_tool_calls" else 2)
+    monkeypatch.setattr(code_agent, "MAX_TURNS", 1 if limit == "max_turns" else 2)
+    monkeypatch.setattr(code_agent, "MAX_TOOL_CALLS", 1 if limit == "max_tool_calls" else 2)
     provider = Provider(
         [
             reply(
@@ -111,8 +113,8 @@ async def test_limits_preserve_each_benchmarks_grading_contract(
             pytest.fail("Agent deadline did not cancel generation")
 
         monkeypatch.setattr(provider, "generate", wait_for_deadline)
-    result = await swe.SWEBench(subset).evaluate(example, provider, Generation(30), tmp_path)
-    assert result.score == (1 if subset == "deepswe" else 0)
+    result = await benchmark.evaluate(example, provider, Generation(30), tmp_path)
+    assert result.score == (1 if isinstance(benchmark, DeepSWE) else 0)
     assert result.details["verifier_reward"] == 1
     assert result.details["stop_reason"] == ("max_tokens" if limit == "length" else limit)
     assert result.details["turns"] == len(provider.calls) == 1

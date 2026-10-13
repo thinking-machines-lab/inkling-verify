@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import get_args
 from urllib.parse import urlsplit
 
+from .code_agent import CodeBenchmark
 from .providers import APIProvider
 from .runner import run
 from .types import Api, Benchmark, Generation
@@ -129,9 +130,9 @@ async def evaluate(
     dataset_size = len(examples)
     if args.limit is not None:
         examples = examples[: args.limit]
-    swe = benchmark.name.startswith("swe-bench-")
+    code = isinstance(benchmark, CodeBenchmark)
     generation = Generation(
-        max_tokens=args.max_output_tokens or (262144 if swe else 131072),
+        max_tokens=args.max_output_tokens or (262144 if code else 131072),
         temperature=args.temperature,
         top_p=args.top_p,
         reasoning_effort=None if args.reasoning_effort == "default" else args.reasoning_effort,
@@ -186,7 +187,7 @@ async def evaluate(
             generation,
             args.output.resolve(),
             configuration=configuration,
-            concurrency=args.concurrency or (32 if swe else 64),
+            concurrency=args.concurrency or (32 if code else 64),
             resume=args.resume,
             judge=judge,
         )

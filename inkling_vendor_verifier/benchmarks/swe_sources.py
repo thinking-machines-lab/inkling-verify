@@ -227,7 +227,7 @@ def _source_identity(subset: str) -> dict[str, str]:
 
 
 def prepare_source(data_dir: Path, subset: str) -> Path:
-    destination = data_dir / f"swe-bench-{subset}"
+    destination = data_dir / ("deepswe" if subset == "deepswe" else f"swe-bench-{subset}")
     if destination.exists():
         raise FileExistsError(destination)
     tasks = source_selection(subset)
@@ -257,7 +257,7 @@ def prepare_source(data_dir: Path, subset: str) -> Path:
 
 
 def load_source(data_dir: Path, subset: str) -> list[Example]:
-    directory = data_dir / f"swe-bench-{subset}"
+    directory = data_dir / ("deepswe" if subset == "deepswe" else f"swe-bench-{subset}")
     manifest = json.loads((directory / "manifest.json").read_text())
     expected = {
         "benchmark": directory.name,
