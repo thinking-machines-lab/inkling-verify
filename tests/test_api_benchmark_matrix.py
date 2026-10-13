@@ -136,7 +136,10 @@ async def test_niah_uses_same_prompt_and_visible_answer_across_apis(
 @pytest.mark.parametrize("api", APIS)
 @pytest.mark.parametrize(
     "judge_api, generation, judge_generation, answer",
-    [(None, Generation(131072), None, "Exact Answer: 4"), (None, GENERATION, None, "")]
+    [
+        (None, Generation(131072, reasoning_effort="max"), None, "Exact Answer: 4"),
+        (None, GENERATION, None, ""),
+    ]
     + [
         (judge, GENERATION, settings, "Exact Answer: 4")
         for judge in APIS
@@ -228,14 +231,14 @@ async def test_hle_generates_and_judges_across_apis(
         assert private_state not in json.dumps(judge_body)
     assert_judge_request(judge_body, judge_api or api, expected_judge)
     if api == "openai-completions":
-        assert candidate_body["reasoning_effort"] == "high"
+        assert candidate_body["reasoning_effort"] == generation.reasoning_effort
         assert candidate_body["max_completion_tokens"] == generation.max_tokens
     elif api == "openai-responses":
-        assert candidate_body["reasoning"] == {"effort": "high"}
+        assert candidate_body["reasoning"] == {"effort": generation.reasoning_effort}
         assert candidate_body["max_output_tokens"] == generation.max_tokens
     else:
         assert candidate_body["thinking"] == {"type": "adaptive"}
-        assert candidate_body["output_config"]["effort"] == "high"
+        assert candidate_body["output_config"]["effort"] == generation.reasoning_effort
         assert candidate_body["max_tokens"] == generation.max_tokens
 
 

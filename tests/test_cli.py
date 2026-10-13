@@ -82,6 +82,8 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
         assert args.data_dir.resolve() == tmp_path / "prepared"
         assert args.output.resolve() == tmp_path / "results"
         assert args.limit is None
+        if module is hle:
+            assert args.reasoning_effort == "max"
         if module is niah:
             assert (
                 args.max_output_tokens,

@@ -119,12 +119,12 @@ Only one process may use an output directory at a time.
 
 ### Generation and judging
 
-| Default | SWE-bench / DeepSWE | MMMU-Pro / HLE candidate | NIAH |
-| --- | --- | --- | --- |
-| Output tokens | 262,144 per tool trajectory | 131,072 per candidate | 128 |
-| Temperature / top-p | 1 / 1 | 1 / 1 | 0 / omitted |
-| Reasoning effort | high | high | none |
-| Concurrency | 32 | 64 | 4 |
+| Default | SWE-bench / DeepSWE | MMMU-Pro | HLE candidate | NIAH |
+| --- | --- | --- | --- | --- |
+| Output tokens | 262,144 per tool trajectory | 131,072 | 131,072 | 128 |
+| Temperature / top-p | 1 / 1 | 1 / 1 | 1 / 1 | 0 / omitted |
+| Reasoning effort | high | high | max (0.99 for Inkling) | none |
+| Concurrency | 32 | 64 | 64 | 4 |
 
 There is one sample per case. Override defaults with `--max-output-tokens`,
 `--temperature`, `--top-p`, `--reasoning-effort` and `--concurrency`.

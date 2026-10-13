@@ -63,7 +63,9 @@ def parser(
     evaluate.add_argument("--temperature", type=optional_float, default=1.0, metavar="FLOAT|none")
     evaluate.add_argument("--top-p", type=optional_float, default=1.0, metavar="FLOAT|none")
     evaluate.add_argument(
-        "--reasoning-effort", choices=("default", "none", "low", "medium", "high"), default="high"
+        "--reasoning-effort",
+        choices=("default", "none", "low", "medium", "high", "max"),
+        default="high",
     )
     evaluate.add_argument(
         "--limit", type=positive, help="first N cases for a partial-dataset smoke test"
