@@ -18,8 +18,8 @@ class SWEBench(CodeBenchmark):
         self.subset = subset
         self.name = self.cache_name = f"swe-bench-{subset}"
 
-    def prepare(self, data_dir: Path, bundle: Path) -> Path:
-        return task_bundles.prepare(data_dir, self.name, bundle)
+    def prepare(self, data_dir: Path) -> Path:
+        return task_bundles.prepare(data_dir, self.name)
 
     def load(self, data_dir: Path) -> list[Example]:
         return task_bundles.load(data_dir, self.name)
@@ -33,11 +33,10 @@ def main() -> None:
             choices=("signal", "verified", "pro", "multilingual"),
             default="signal",
         )
-    prepare_parser.add_argument("--bundle", type=Path, required=True, help="Pinned task archive")
     args = root.parse_args()
     benchmark = SWEBench(args.subset)
     if args.command == "prepare":
-        benchmark.prepare(args.data_dir.resolve(), args.bundle.resolve())
+        benchmark.prepare(args.data_dir.resolve())
         print(f"Prepared {benchmark.name} in {args.data_dir}")
     else:
         asyncio.run(evaluate(benchmark, args))

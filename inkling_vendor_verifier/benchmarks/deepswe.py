@@ -15,20 +15,19 @@ class DeepSWE(CodeBenchmark):
     name = cache_name = "deepswe"
     zero_reward_on_limit = False
 
-    def prepare(self, data_dir: Path, bundle: Path) -> Path:
-        return task_bundles.prepare(data_dir, self.name, bundle)
+    def prepare(self, data_dir: Path) -> Path:
+        return task_bundles.prepare(data_dir, self.name)
 
     def load(self, data_dir: Path) -> list[Example]:
         return task_bundles.load(data_dir, self.name)
 
 
 def main() -> None:
-    root, prepare_parser, _ = parser("deepswe")
-    prepare_parser.add_argument("--bundle", type=Path, required=True, help="Pinned task archive")
+    root, _, _ = parser("deepswe")
     args = root.parse_args()
     benchmark = DeepSWE()
     if args.command == "prepare":
-        benchmark.prepare(args.data_dir.resolve(), args.bundle.resolve())
+        benchmark.prepare(args.data_dir.resolve())
         print(f"Prepared {benchmark.name} in {args.data_dir}")
     else:
         asyncio.run(evaluate(benchmark, args))

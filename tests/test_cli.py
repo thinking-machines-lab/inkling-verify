@@ -50,14 +50,11 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
         lambda self, data_dir, *args, **kwargs: prepare(self.name, data_dir, *args, **kwargs),
     )
     expected_name = (benchmark_type() if subset is None else benchmark_type(subset)).name
-    coding = module in (swe, deepswe)
     argv = ["benchmark.py", command, "--data-dir", "prepared"]
     if subset is not None:
         argv.extend(["--subset", subset])
     if command == "run":
         argv.extend(["--api", "anthropic", "--model", "candidate", "--output", "results"])
-    elif coding:
-        argv.extend(["--bundle", "tasks.tar.gz"])
     elif module is niah:
         argv.extend(["--tokenizer", "model"])
     monkeypatch.setattr(sys, "argv", argv)
@@ -67,9 +64,7 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
     if command == "prepare":
         expected = (expected_name, tmp_path / "prepared")
         options = {}
-        if coding:
-            expected += (tmp_path / "tasks.tar.gz",)
-        elif module is niah:
+        if module is niah:
             expected += ("model",)
             options = {
                 "context_lengths": (4000, 16000, 64000, 256000, 1024000),
@@ -100,14 +95,13 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
 @pytest.mark.parametrize(
     "module,arguments,message",
     [
-        (swe, [], "required: --bundle"),
-        (swe, ["--subset", "verified"], "required: --bundle"),
-        (deepswe, [], "required: --bundle"),
+        (swe, ["--bundle", "tasks.tar.gz"], "unrecognized arguments: --bundle"),
+        (deepswe, ["--bundle", "tasks.tar.gz"], "unrecognized arguments: --bundle"),
         (hle, ["--bundle", "tasks.tar.gz"], "unrecognized arguments: --bundle"),
         (mmmu, ["--bundle", "tasks.tar.gz"], "unrecognized arguments: --bundle"),
         (
             deepswe,
-            ["--bundle", "tasks.tar.gz", "--subset", "deepswe"],
+            ["--subset", "deepswe"],
             "unrecognized arguments: --subset",
         ),
         (swe, ["--subset", "deepswe"], "invalid choice: 'deepswe'"),

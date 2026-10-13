@@ -1,27 +1,27 @@
 {
   "swe-bench-signal": {
-    "filename": "swe-bench-signal-v1.tar.gz",
     "sha256": "5014003790cf3690c40a83e2da34db3cb2bf769c5ad21c30984dbb3e33460a8a",
-    "manifest_sha256": "45d909014769bfeac584ae2a58ee576bd429946aade244ac29cc46140adf4a2a"
+    "manifest_sha256": "45d909014769bfeac584ae2a58ee576bd429946aade244ac29cc46140adf4a2a",
+    "url": "https://api.github.com/repos/thinking-machines-lab/inkling-vendor-verifier/releases/assets/635759014"
   },
   "swe-bench-verified": {
-    "filename": "swe-bench-verified-v1.tar.gz",
     "sha256": "3a46150c373a19219f7af07f96e91b4aba50d982e9583824ab0145eeb755e9ae",
-    "manifest_sha256": "a0b76cb8090abad4c762db00ecce4ba227f0196af53538e728cc6af0d3d2f770"
+    "manifest_sha256": "a0b76cb8090abad4c762db00ecce4ba227f0196af53538e728cc6af0d3d2f770",
+    "url": "https://api.github.com/repos/thinking-machines-lab/inkling-vendor-verifier/releases/assets/635759015"
   },
   "swe-bench-pro": {
-    "filename": "swe-bench-pro-v1.tar.gz",
     "sha256": "11211ee681bc04021e9e5974e55d58417dd6108dc6558e733a534a472ab58185",
-    "manifest_sha256": "783fc268b77e1f6d83efef05acfc47c909b85c65c7232012844e033a3cdaaf01"
+    "manifest_sha256": "783fc268b77e1f6d83efef05acfc47c909b85c65c7232012844e033a3cdaaf01",
+    "url": "https://api.github.com/repos/thinking-machines-lab/inkling-vendor-verifier/releases/assets/635759016"
   },
   "swe-bench-multilingual": {
-    "filename": "swe-bench-multilingual-v1.tar.gz",
     "sha256": "a4db32edb8cf7298d5872f1c3067fb20eec9c067aa3eb8056b1d99c85d7a0290",
-    "manifest_sha256": "48201f73c4585052f0c6f66785bc6bccd14734d4fbfb722d08c7c44eecbb1cbe"
+    "manifest_sha256": "48201f73c4585052f0c6f66785bc6bccd14734d4fbfb722d08c7c44eecbb1cbe",
+    "url": "https://api.github.com/repos/thinking-machines-lab/inkling-vendor-verifier/releases/assets/635759013"
   },
   "deepswe": {
-    "filename": "deepswe-v1.tar.gz",
     "sha256": "0bb5fca3c2c1025cb961020dbc20fe8e7f562e29ef6ddca83e1165368210aff0",
-    "manifest_sha256": "4d6b574df5611adc45dc385a1fe37f8cb75b6825b27f63e5b23b7131a5ae7099"
+    "manifest_sha256": "4d6b574df5611adc45dc385a1fe37f8cb75b6825b27f63e5b23b7131a5ae7099",
+    "url": "https://api.github.com/repos/thinking-machines-lab/inkling-vendor-verifier/releases/assets/635759011"
   }
 }

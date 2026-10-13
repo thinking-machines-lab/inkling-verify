@@ -37,25 +37,15 @@ methods use `requirements.txt`; uv is not required.
 
 ## Prepare data
 
-Coding benchmarks take a local archive from the
-[`coding-tasks-v1` release](https://github.com/thinking-machines-lab/inkling-vendor-verifier/releases/tag/coding-tasks-v1):
-
-| Benchmark / subset | Archive |
-| --- | --- |
-| SWE Signal | `swe-bench-signal-v1.tar.gz` |
-| SWE Verified | `swe-bench-verified-v1.tar.gz` |
-| SWE Pro | `swe-bench-pro-v1.tar.gz` |
-| SWE Multilingual | `swe-bench-multilingual-v1.tar.gz` |
-| DeepSWE | `deepswe-v1.tar.gz` |
-
-Download in a browser, or optionally use an authenticated GitHub CLI:
-`gh release download coding-tasks-v1 --repo thinking-machines-lab/inkling-vendor-verifier --pattern deepswe-v1.tar.gz --dir data`.
-GitHub authentication is handled outside Python; GitHub CLI is not required.
+Coding preparation automatically downloads the selected benchmark's pinned task
+archive and verifies its checksums. The archive contains instructions, Docker
+build files, and grading tests. Private release access uses `GH_TOKEN`,
+`GITHUB_TOKEN`, or an existing `gh auth login`; GitHub CLI is optional.
 
 ```bash
-python swe_bench.py prepare --subset signal --bundle data/swe-bench-signal-v1.tar.gz
-python swe_bench.py prepare --subset verified --bundle data/swe-bench-verified-v1.tar.gz
-python deepswe.py prepare --bundle data/deepswe-v1.tar.gz
+python swe_bench.py prepare
+python swe_bench.py prepare --subset verified
+python deepswe.py prepare
 
 python mmmu_pro.py prepare --subset vision
 # Other MMMU-Pro subsets: standard-4, standard-10.

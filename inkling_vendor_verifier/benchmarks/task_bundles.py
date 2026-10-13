@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 import tarfile
 import tempfile
+import urllib.error
+import urllib.request
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 
@@ -14,6 +19,35 @@ from inkling_vendor_verifier.types import Example, Message, Text
 
 def release(benchmark: str) -> dict[str, str]:
     return json.loads(files(__package__).joinpath("task_bundles.json").read_text())[benchmark]
+
+
+def _download(url: str, destination: Path) -> None:
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token and shutil.which("gh"):
+        auth = subprocess.run(
+            ["gh", "auth", "token", "--hostname", "github.com"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if auth.returncode == 0:
+            token = auth.stdout.strip()
+    request = urllib.request.Request(url, headers={"Accept": "application/octet-stream"})
+    if token:
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
+    try:
+        with (
+            urllib.request.urlopen(request, timeout=120) as response,
+            destination.open("wb") as out,
+        ):
+            shutil.copyfileobj(response, out)
+    except urllib.error.HTTPError as error:
+        if error.code not in {401, 403, 404}:
+            raise
+        raise RuntimeError(
+            f"Task download failed (HTTP {error.code}). For private release access, set GH_TOKEN "
+            "or GITHUB_TOKEN, or use gh auth login with an account that can read this repository."
+        ) from error
 
 
 def _file_hashes(directory: Path) -> dict[str, str]:
@@ -44,16 +78,20 @@ def _manifest(directory: Path, benchmark: str) -> dict:
     return manifest
 
 
-def prepare(data_dir: Path, benchmark: str, bundle: Path) -> Path:
-    with bundle.open("rb") as source:
-        checksum = hashlib.file_digest(source, "sha256").hexdigest()
-    if checksum != release(benchmark)["sha256"]:
-        raise ValueError("Task archive differs from the pinned release bundle")
+def prepare(data_dir: Path, benchmark: str) -> Path:
     destination = data_dir / benchmark
     if destination.exists():
         raise FileExistsError(destination)
     data_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".tasks-prepare-", dir=data_dir) as temporary:
+        pin = release(benchmark)
+        bundle = Path(temporary) / "tasks.tar.gz"
+        print(f"Downloading {benchmark} task data...", flush=True)
+        _download(pin["url"], bundle)
+        with bundle.open("rb") as source:
+            checksum = hashlib.file_digest(source, "sha256").hexdigest()
+        if checksum != pin["sha256"]:
+            raise ValueError("Task archive differs from the pinned release bundle")
         staged = Path(temporary) / benchmark
         staged.mkdir()
         with tarfile.open(bundle) as archive:
