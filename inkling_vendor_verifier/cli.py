@@ -45,9 +45,6 @@ def add_api_arguments(parser: argparse.ArgumentParser, *, prefix: str = "") -> N
     parser.add_argument(
         f"--{prefix}api-key-env", help="environment variable containing the API key"
     )
-    parser.add_argument(
-        f"--{prefix}extra-body", type=Path, help="JSON object of vendor-specific API fields"
-    )
 
 
 def parser(
@@ -98,9 +95,6 @@ def endpoint(api: str, base_url: str | None) -> str:
 
 
 def provider_configuration(args: argparse.Namespace) -> tuple[dict, str]:
-    extra_body = json.loads(args.extra_body.read_text()) if args.extra_body else {}
-    if not isinstance(extra_body, dict):
-        raise ValueError("extra-body must contain a JSON object")
     base_url = endpoint(args.api, args.base_url)
     key_name = args.api_key_env or (
         "ANTHROPIC_API_KEY" if args.api == "anthropic" else "OPENAI_API_KEY"
@@ -113,7 +107,6 @@ def provider_configuration(args: argparse.Namespace) -> tuple[dict, str]:
         "api": args.api,
         "model": args.model,
         "base_url": base_url,
-        "extra_body": extra_body,
         "api_key_env": key_name,
     }
     return configuration, api_key
@@ -154,7 +147,6 @@ async def evaluate(
                 args.model,
                 base_url=candidate_config["base_url"],
                 api_key=api_key,
-                extra_body=candidate_config["extra_body"],
             )
         )
         judge = None
@@ -171,7 +163,6 @@ async def evaluate(
                     judge_args.model,
                     base_url=judge_config["base_url"],
                     api_key=judge_key,
-                    extra_body=judge_config["extra_body"],
                 )
             )
         if judge_generation is not None:

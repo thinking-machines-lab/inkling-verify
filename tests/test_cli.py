@@ -44,31 +44,19 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
     monkeypatch.setattr(module, "evaluate", evaluate)
     if module is niah:
         monkeypatch.setattr(niah, "write_grid", lambda output: None)
-    if module is swe:
-        monkeypatch.setattr(
-            module,
-            "prepare",
-            lambda data_dir, bundle: prepare("swe-bench-signal", data_dir, bundle),
-        )
-        monkeypatch.setattr(
-            module,
-            "prepare_source",
-            lambda data_dir, subset: prepare(f"swe-bench-{subset}", data_dir),
-        )
-    else:
-        monkeypatch.setattr(
-            benchmark_type,
-            "prepare",
-            lambda self, data_dir, *args, **kwargs: prepare(self.name, data_dir, *args, **kwargs),
-        )
+    monkeypatch.setattr(
+        benchmark_type,
+        "prepare",
+        lambda self, data_dir, *args, **kwargs: prepare(self.name, data_dir, *args, **kwargs),
+    )
     expected_name = (benchmark_type() if subset is None else benchmark_type(subset)).name
-    signal = module is swe and subset is None
+    coding = module in (swe, deepswe)
     argv = ["benchmark.py", command, "--data-dir", "prepared"]
     if subset is not None:
         argv.extend(["--subset", subset])
     if command == "run":
         argv.extend(["--api", "anthropic", "--model", "candidate", "--output", "results"])
-    elif signal:
+    elif coding:
         argv.extend(["--bundle", "tasks.tar.gz"])
     elif module is niah:
         argv.extend(["--tokenizer", "model"])
@@ -79,7 +67,7 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
     if command == "prepare":
         expected = (expected_name, tmp_path / "prepared")
         options = {}
-        if signal:
+        if coding:
             expected += (tmp_path / "tasks.tar.gz",)
         elif module is niah:
             expected += ("model",)
@@ -112,22 +100,20 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
 @pytest.mark.parametrize(
     "module,arguments,message",
     [
-        (swe, [], "--bundle is required when preparing --subset signal"),
-        (
-            swe,
-            ["--subset", "verified", "--bundle", "tasks.tar.gz"],
-            "--bundle is only supported with --subset signal",
-        ),
+        (swe, [], "required: --bundle"),
+        (swe, ["--subset", "verified"], "required: --bundle"),
+        (deepswe, [], "required: --bundle"),
         (hle, ["--bundle", "tasks.tar.gz"], "unrecognized arguments: --bundle"),
         (mmmu, ["--bundle", "tasks.tar.gz"], "unrecognized arguments: --bundle"),
-        (deepswe, ["--bundle", "tasks.tar.gz"], "unrecognized arguments: --bundle"),
-        (deepswe, ["--subset", "deepswe"], "unrecognized arguments: --subset"),
+        (
+            deepswe,
+            ["--bundle", "tasks.tar.gz", "--subset", "deepswe"],
+            "unrecognized arguments: --subset",
+        ),
         (swe, ["--subset", "deepswe"], "invalid choice: 'deepswe'"),
     ],
 )
-def test_bundle_argument_is_required_only_for_swe_prepare(
-    monkeypatch, capsys, module, arguments, message
-):
+def test_prepare_arguments_match_benchmark(monkeypatch, capsys, module, arguments, message):
     monkeypatch.setattr(sys, "argv", ["benchmark.py", "prepare", *arguments])
     with pytest.raises(SystemExit) as error:
         module.main()
@@ -391,8 +377,6 @@ def test_hle_cli_resolves_judge_independently(
             "https://candidate/v1",
             "--api-key-env",
             "CANDIDATE_KEY",
-            "--extra-body",
-            "candidate-only.json",
             "--temperature",
             "none",
             "--top-p",
@@ -410,7 +394,6 @@ def test_hle_cli_resolves_judge_independently(
         assert judge.api == expected_api
         assert judge.base_url == expected_url
         assert judge.api_key_env == expected_key_env
-        assert judge.extra_body is None
         assert judge.model == ("judge" if "--judge-model" in arguments else "candidate")
     assert captured["judge_generation"] == expected_generation
 
@@ -460,7 +443,6 @@ async def test_cli_records_judge_configuration_and_closes_both_providers(
             model="judge",
             base_url="https://judge",
             api_key_env="JUDGE_KEY",
-            extra_body=None,
         )
         if external
         else None

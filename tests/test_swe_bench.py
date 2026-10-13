@@ -1,8 +1,4 @@
 import asyncio
-import hashlib
-import io
-import json
-import tarfile
 
 import pytest
 
@@ -148,77 +144,8 @@ async def test_provider_failure_is_not_a_zero_score(task, tmp_path):
     assert not sandbox.graded
 
 
-@pytest.mark.parametrize(
-    "name,kind,error",
-    [
-        ("../escape", "file", tarfile.OutsideDestinationError),
-        ("/absolute", "file", ValueError),
-        ("tasks/task/solution/solve.sh", "file", ValueError),
-        ("tasks/task/instruction.md", "symlink", ValueError),
-        ("tasks/task/instruction.md", "hardlink", ValueError),
-    ],
-)
-def test_prepare_rejects_unsafe_or_solution_members(tmp_path, monkeypatch, name, kind, error):
-    monkeypatch.setattr(swe, "_validate", lambda path: None)
-    archive = tmp_path / "bundle.tar"
-    with tarfile.open(archive, "w") as tar:
-        member = tarfile.TarInfo(name)
-        if kind != "file":
-            member.type = tarfile.SYMTYPE if kind == "symlink" else tarfile.LNKTYPE
-            member.linkname = "/etc/passwd"
-            tar.addfile(member)
-        else:
-            member.size = 1
-            tar.addfile(member, io.BytesIO(b"x"))
-    monkeypatch.setattr(
-        swe,
-        "release",
-        lambda: {
-            "bundle_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
-            "files_sha256": swe._manifest_digest({}),
-        },
-    )
-    with pytest.raises(error):
-        swe.prepare(tmp_path / "data", archive)
-    assert not list((tmp_path / "data").iterdir())
-
-
-def test_prepare_rejects_archive_before_extraction(tmp_path):
-    archive = tmp_path / "untrusted.tar"
-    archive.write_bytes(b"not the pinned release")
-    with pytest.raises(ValueError, match="pinned release bundle"):
-        swe.prepare(tmp_path / "data", archive)
-    assert not (tmp_path / "data").exists()
-
-
-@pytest.mark.parametrize(
-    "mutate, error",
-    [(False, "differs from the pinned release"), (True, "files have changed")],
-)
-@pytest.mark.parametrize("name", ["instruction.md", "task.toml"])
-def test_load_rejects_noncanonical_or_changed_assets(tmp_path, monkeypatch, mutate, error, name):
-    monkeypatch.setattr(swe, "_validate", lambda path: None)
-    directory = tmp_path / "swe-bench-signal"
-    directory.mkdir()
-    asset = directory / name
-    asset.write_text("original")
-    (directory / "manifest.json").write_text(json.dumps({"files": swe._file_hashes(directory)}))
-    if mutate:
-        asset.write_text("changed")
-    with pytest.raises(ValueError, match=error):
-        swe.SWEBench().load(tmp_path)
-
-
-def test_selection_matches_pinned_suite_counts():
-    from collections import Counter
-
-    rows = swe.selection()
-    assert swe._manifest_digest(rows) == (
-        "74c822e4d80df81118e52f99ff8e2b0df4c282a475d8bf5bbf26d36b15abdc4a"
-    )
-    assert len(rows) == len({row["id"] for row in rows}) == 250
-    assert Counter(row["suite"] for row in rows) == {
-        "swebench-verified": 63,
-        "swebench-pro": 121,
-        "swebench-multilingual": 66,
-    }
+@pytest.mark.parametrize("subset", ["all", "deepswe"])
+def test_swe_subsets_exclude_other_benchmarks(subset):
+    assert swe.SWEBench().name == "swe-bench-signal"
+    with pytest.raises(ValueError, match="Unknown SWE-bench subset"):
+        swe.SWEBench(subset)

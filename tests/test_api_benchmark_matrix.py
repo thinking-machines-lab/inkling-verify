@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from contextlib import AsyncExitStack
 from functools import partial
 
 import pytest
@@ -134,14 +135,16 @@ async def test_niah_uses_same_prompt_and_visible_answer_across_apis(
 
 @pytest.mark.parametrize("api", APIS)
 @pytest.mark.parametrize(
-    "candidate, generation, expected_judge",
-    [
-        ("Exact Answer: 4", Generation(131072), hle.JUDGE_GENERATION),
-        ("", GENERATION, Generation(32768, None, None, "none")),
+    "judge_api, generation, judge_generation, answer",
+    [(None, Generation(131072), None, "Exact Answer: 4"), (None, GENERATION, None, "")]
+    + [
+        (judge, GENERATION, settings, "Exact Answer: 4")
+        for judge in APIS
+        for settings in (None, Generation(50, 0.5, 0.9, "low"))
     ],
 )
-async def test_hle_generates_and_judges_on_same_provider(
-    sdk_provider, reply, tmp_path, api, candidate, generation, expected_judge
+async def test_hle_generates_and_judges_across_apis(
+    sdk_provider, reply, tmp_path, api, judge_api, generation, judge_generation, answer
 ):
     verdict = {
         "extracted_final_answer": "4",
@@ -150,15 +153,15 @@ async def test_hle_generates_and_judges_on_same_provider(
         "confidence": 100,
         "strict": True,
     }
-    provider, requests = sdk_provider(
+    responses = [reply(api, answer)]
+    if judge_api is None:
+        responses.append(reply(api, json.dumps(verdict)))
+    candidate, candidate_requests = sdk_provider(
         api,
-        [
-            reply(api, candidate),
-            reply(api, json.dumps(verdict)),
-        ],
+        responses,
         model="candidate",
         base_url="https://candidate.test/v1/",
-        api_key="test-key",
+        api_key="candidate-key",
     )
     example = Example(
         "math",
@@ -169,40 +172,71 @@ async def test_hle_generates_and_judges_on_same_provider(
         "4",
         {"question": "What is two plus two?"},
     )
-    async with provider:
-        result = await hle.HLE().evaluate(example, provider, generation, tmp_path)
+    async with AsyncExitStack() as stack:
+        await stack.enter_async_context(candidate)
+        judge = None
+        judge_requests = candidate_requests
+        if judge_api is not None:
+            judge, judge_requests = sdk_provider(
+                judge_api,
+                [reply(judge_api, json.dumps(verdict))],
+                model="judge",
+                base_url="https://judge.test/v1/",
+                api_key="judge-key",
+            )
+            await stack.enter_async_context(judge)
+        result = await hle.HLE(judge_generation).evaluate(
+            example, candidate, generation, tmp_path, judge=judge
+        )
+    expected_judge = judge_generation or (
+        Generation(32768, None, None, "none")
+        if judge_api is None and generation.temperature is None
+        else hle.JUDGE_GENERATION
+    )
     assert result.score == 1 and result.answer == "4"
     assert result.details["verdict"] == verdict
     assert result.details["judge_temperature"] == expected_judge.temperature
     assert result.details["judge_top_p"] == expected_judge.top_p
-    assert len(requests) == 2
-    bodies = [json.loads(request.content) for request in requests]
-    assert all(request.url.host == "candidate.test" for request in requests)
-    assert all(body["model"] == "candidate" for body in bodies)
+    assert len(candidate_requests) == (2 if judge_api is None else 1)
+    assert len(judge_requests) == (2 if judge_api is None else 1)
+    candidate_request, judge_request = candidate_requests[0], judge_requests[-1]
+    assert candidate_request.url.host == "candidate.test"
+    judge_name = "candidate" if judge_api is None else "judge"
+    assert judge_request.url.host == f"{judge_name}.test"
+    assert "candidate-key" in " ".join(candidate_request.headers.values())
+    assert f"{judge_name}-key" in " ".join(judge_request.headers.values())
+    if judge_api is not None:
+        assert "candidate-key" not in " ".join(judge_request.headers.values())
+    candidate_body = json.loads(candidate_request.content)
+    judge_body = json.loads(judge_request.content)
+    assert candidate_body["model"] == "candidate"
+    assert judge_body["model"] == judge_name
     system = (
-        bodies[0]["system"][0]["text"]
+        candidate_body["system"][0]["text"]
         if api == "anthropic"
-        else conversation(bodies[0], api)[0]["content"]
+        else conversation(candidate_body, api)[0]["content"]
     )
     assert system == hle.SYSTEM_PROMPTS["exactMatch"]
-    assert "tools" not in bodies[0]
+    assert "tools" not in candidate_body
     if generation.temperature is None:
-        assert all(field not in bodies[0] for field in ("temperature", "top_p"))
-    assert user_text(bodies[0], api) == example.metadata["question"]
-    assert user_text(bodies[1], api) == hle.JUDGE_PROMPT.format(
-        question=example.metadata["question"], response=candidate, correct_answer="4"
+        assert all(field not in candidate_body for field in ("temperature", "top_p"))
+    assert user_text(candidate_body, api) == example.metadata["question"]
+    assert user_text(judge_body, judge_api or api) == hle.JUDGE_PROMPT.format(
+        question=example.metadata["question"], response=answer, correct_answer="4"
     )
-    assert "native reasoning" not in json.dumps(bodies[1])
-    assert "opaque reasoning" not in json.dumps(bodies[1])
-    assert "opaque signature" not in json.dumps(bodies[1])
-    assert_judge_request(bodies[1], api, expected_judge)
+    for private_state in ("native reasoning", "opaque reasoning", "opaque signature"):
+        assert private_state not in json.dumps(judge_body)
+    assert_judge_request(judge_body, judge_api or api, expected_judge)
     if api == "openai-completions":
-        assert bodies[0]["reasoning_effort"] == "high"
+        assert candidate_body["reasoning_effort"] == "high"
+        assert candidate_body["max_completion_tokens"] == generation.max_tokens
     elif api == "openai-responses":
-        assert bodies[0]["reasoning"] == {"effort": "high"}
+        assert candidate_body["reasoning"] == {"effort": "high"}
+        assert candidate_body["max_output_tokens"] == generation.max_tokens
     else:
-        assert bodies[0]["thinking"] == {"type": "adaptive"}
-        assert bodies[0]["output_config"]["effort"] == "high"
+        assert candidate_body["thinking"] == {"type": "adaptive"}
+        assert candidate_body["output_config"]["effort"] == "high"
+        assert candidate_body["max_tokens"] == generation.max_tokens
 
 
 @pytest.mark.parametrize("api", APIS)
@@ -215,7 +249,8 @@ async def test_mmmu_sends_original_png_and_scores_shared_parser(
 ):
     image_path = tmp_path / "question.png"
     Image.new("RGB", (3, 2), color=(9, 18, 27)).save(image_path)
-    image_bytes = image_path.read_bytes()
+    image_bytes = image_path.read_bytes() + (bytes(range(256)) * 43000 if answer else b"")
+    image_path.write_bytes(image_bytes)
     example = Example(
         "vision",
         (),
@@ -278,13 +313,15 @@ class Sandbox:
 
 
 @pytest.mark.parametrize("api", APIS)
-@pytest.mark.parametrize("benchmark", [swe.SWEBench(), DeepSWE()])
+@pytest.mark.parametrize(
+    "benchmark, tool_text", [(swe.SWEBench(), "I will inspect the repository."), (DeepSWE(), None)]
+)
 async def test_swe_native_tool_loop_and_grading(
-    monkeypatch, sdk_provider, reply, tmp_path, api, benchmark
+    monkeypatch, sdk_provider, reply, tmp_path, api, benchmark, tool_text
 ):
     sandbox = Sandbox()
     monkeypatch.setattr(code_agent, "DockerSandbox", lambda *args: sandbox)
-    first_response = reply(api, "I will inspect the repository.", tools=("pwd", "printf fixed"))
+    first_response = reply(api, tool_text, tools=("pwd", "printf fixed"))
     provider, requests = sdk_provider(
         api,
         [first_response, reply(api, "Fixed.")],
@@ -326,8 +363,9 @@ async def test_swe_native_tool_loop_and_grading(
         results = [(message["tool_call_id"], message["content"]) for message in messages[2:]]
         budget = bodies[1]["max_completion_tokens"]
     elif api == "openai-responses":
-        assert messages[1:5] == first_response["output"]
-        results = [(message["call_id"], message["output"]) for message in messages[5:]]
+        end = 1 + len(first_response["output"])
+        assert messages[1:end] == first_response["output"]
+        results = [(message["call_id"], message["output"]) for message in messages[end:]]
         budget = bodies[1]["max_output_tokens"]
     else:
         assert messages[1]["content"] == first_response["content"]
@@ -360,81 +398,6 @@ async def test_hle_invalid_judge_is_error_across_protocols(sdk_provider, reply, 
         with pytest.raises(ValueError, match="invalid ExtractedAnswer"):
             await hle.HLE().evaluate(example, provider, GENERATION, tmp_path)
     assert len(requests) == 2
-
-
-@pytest.mark.parametrize(
-    "candidate_api, judge_api, judge_generation",
-    [(candidate, judge, None) for candidate in APIS for judge in APIS]
-    + [("openai-completions", judge, Generation(50, 0.5, 0.9, "low")) for judge in APIS],
-)
-async def test_hle_independent_judge_across_api_pairs(
-    sdk_provider, reply, tmp_path, candidate_api, judge_api, judge_generation
-):
-    candidate, candidate_requests = sdk_provider(
-        candidate_api,
-        [reply(candidate_api, "Exact Answer: 4")],
-        model="candidate",
-        base_url="https://candidate.test/v1/",
-        api_key="candidate-key",
-    )
-    verdict = {
-        "extracted_final_answer": "4",
-        "reasoning": "The answers match.",
-        "correct": "yes",
-        "confidence": 100,
-        "strict": True,
-    }
-    judge, judge_requests = sdk_provider(
-        judge_api,
-        [reply(judge_api, json.dumps(verdict))],
-        model="judge",
-        base_url="https://judge.test/v1/",
-        api_key="judge-key",
-    )
-    example = Example(
-        "math",
-        (Message("user", (Text("Two plus two?"),)),),
-        "4",
-        {
-            "question": "Two plus two?",
-        },
-    )
-    async with candidate, judge:
-        result = await hle.HLE(judge_generation).evaluate(
-            example, candidate, GENERATION, tmp_path, judge=judge
-        )
-    assert result.score == 1
-    assert len(candidate_requests) == len(judge_requests) == 1
-    candidate_request, judge_request = candidate_requests[0], judge_requests[0]
-    assert candidate_request.url.host == "candidate.test"
-    assert judge_request.url.host == "judge.test"
-    assert "candidate-key" in " ".join(candidate_request.headers.values())
-    assert "judge-key" in " ".join(judge_request.headers.values())
-    assert "candidate-key" not in " ".join(judge_request.headers.values())
-    candidate_body = json.loads(candidate_request.content)
-    judge_body = json.loads(judge_request.content)
-    assert candidate_body["model"] == "candidate"
-    assert judge_body["model"] == "judge"
-    assert [message["role"] for message in conversation(candidate_body, candidate_api)] == ["user"]
-    assert all(field not in candidate_body for field in ("tools", "temperature", "top_p"))
-    assert user_text(candidate_body, candidate_api) == example.metadata["question"]
-    if candidate_api == "openai-completions":
-        assert candidate_body["max_completion_tokens"] == GENERATION.max_tokens
-        assert candidate_body["reasoning_effort"] == "high"
-    elif candidate_api == "openai-responses":
-        assert candidate_body["max_output_tokens"] == GENERATION.max_tokens
-        assert candidate_body["reasoning"] == {"effort": "high"}
-    else:
-        assert candidate_body["max_tokens"] == GENERATION.max_tokens
-        assert candidate_body["thinking"] == {"type": "adaptive"}
-        assert candidate_body["output_config"]["effort"] == "high"
-    assert_judge_request(judge_body, judge_api, judge_generation or hle.JUDGE_GENERATION)
-    assert user_text(judge_body, judge_api) == hle.JUDGE_PROMPT.format(
-        question="Two plus two?", response="Exact Answer: 4", correct_answer="4"
-    )
-    assert "native reasoning" not in json.dumps(judge_body)
-    assert "opaque reasoning" not in json.dumps(judge_body)
-    assert "opaque signature" not in json.dumps(judge_body)
 
 
 @pytest.mark.parametrize("api", APIS)

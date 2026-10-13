@@ -210,7 +210,7 @@ class HLE:
 
 
 def judge_settings(args: argparse.Namespace) -> tuple[argparse.Namespace | None, Generation]:
-    fields = ("api", "model", "base_url", "api_key_env", "extra_body")
+    fields = ("api", "model", "base_url", "api_key_env")
     separate = any(getattr(args, f"judge_{field}") is not None for field in fields)
     judge_args = None
     if separate:
@@ -221,7 +221,6 @@ def judge_settings(args: argparse.Namespace) -> tuple[argparse.Namespace | None,
             model=args.judge_model or args.model,
             base_url=args.judge_base_url or (args.base_url if same_api else None),
             api_key_env=args.judge_api_key_env or (args.api_key_env if same_api else None),
-            extra_body=args.judge_extra_body,
         )
     generation = Generation(
         max_tokens=args.judge_max_output_tokens,

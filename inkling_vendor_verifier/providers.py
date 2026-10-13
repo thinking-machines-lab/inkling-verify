@@ -14,31 +14,6 @@ from openai import AsyncOpenAI
 from .types import Api, Generation, Image, Message, Response, Text, Tool, ToolCall, Usage
 
 _APIS = get_args(Api)
-_RESERVED = {
-    "model",
-    "messages",
-    "input",
-    "instructions",
-    "system",
-    "max_tokens",
-    "max_completion_tokens",
-    "max_output_tokens",
-    "temperature",
-    "top_p",
-    "reasoning",
-    "reasoning_effort",
-    "thinking",
-    "tools",
-    "tool_choice",
-    "response_format",
-    "output_config",
-    "text",
-    "store",
-    "include",
-    "stream",
-    "n",
-    "previous_response_id",
-}
 
 
 def _text(message: Message) -> str:
@@ -303,16 +278,12 @@ class APIProvider:
         *,
         base_url: str | None = None,
         api_key: str | None = None,
-        extra_body: dict[str, Any] | None = None,
         timeout: float = 7200,
         max_retries: int = 3,
     ) -> None:
         if api not in _APIS:
             raise ValueError(f"Unknown API: {api}")
         self.api, self.model = api, model
-        self.extra_body = copy.deepcopy(extra_body or {})
-        if conflicts := self.extra_body.keys() & _RESERVED:
-            raise ValueError(f"extra_body cannot override protocol settings: {sorted(conflicts)}")
         kwargs: dict[str, Any] = {"timeout": timeout, "max_retries": max_retries}
         if base_url is not None:
             kwargs["base_url"] = base_url
@@ -426,9 +397,7 @@ class APIProvider:
                 ]
             create = self.client.messages.create
             decode = _decode_anthropic
-        response = await create(**request, extra_body=self.extra_body)
+        response = await create(**request)
         raw = response.model_dump(mode="json", exclude_unset=True)
         message, stop = decode(raw)
-        return Response(
-            message, _usage(raw, self.api), stop, raw, copy.deepcopy(request | self.extra_body)
-        )
+        return Response(message, _usage(raw, self.api), stop, raw, copy.deepcopy(request))
