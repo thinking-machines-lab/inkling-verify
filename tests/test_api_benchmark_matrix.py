@@ -276,7 +276,10 @@ class Sandbox:
 
 
 @pytest.mark.parametrize("api", APIS)
-async def test_swe_native_tool_loop_and_grading(monkeypatch, sdk_provider, reply, tmp_path, api):
+@pytest.mark.parametrize("subset", ["signal", "deepswe"])
+async def test_swe_native_tool_loop_and_grading(
+    monkeypatch, sdk_provider, reply, tmp_path, api, subset
+):
     sandbox = Sandbox()
     monkeypatch.setattr(swe, "DockerSandbox", lambda *args: sandbox)
     first_response = reply(api, "I will inspect the repository.", tools=("pwd", "printf fixed"))
@@ -297,7 +300,7 @@ async def test_swe_native_tool_loop_and_grading(monkeypatch, sdk_provider, reply
         },
     )
     async with provider:
-        result = await swe.SWEBench().evaluate(example, provider, GENERATION, tmp_path)
+        result = await swe.SWEBench(subset).evaluate(example, provider, GENERATION, tmp_path)
     assert result.score == 1 and result.answer == "Fixed."
     assert result.details["turns"] == 2 and result.details["tool_calls"] == 2
     assert result.details["generated_tokens"] == 10

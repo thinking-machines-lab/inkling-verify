@@ -33,6 +33,148 @@ def test_zero_is_valid_and_missing_is_failure(tmp_path):
     assert parse_reward(tmp_path) == 0
 
 
+@pytest.mark.parametrize("reward", [0, 1, 0.5, -1, True, "1", None, float("nan")])
+def test_deepswe_uses_binary_structured_reward(tmp_path, reward):
+    (tmp_path / "reward.json").write_text(json.dumps({"reward": reward, "f2p_passed": 3}))
+    if type(reward) is int and reward in (0, 1):
+        assert parse_reward(tmp_path, structured=True) == reward
+    else:
+        with pytest.raises(ValueError, match="binary reward"):
+            parse_reward(tmp_path, structured=True)
+
+
+def test_deepswe_crash_sentinel_is_an_infrastructure_failure(tmp_path):
+    (tmp_path / "reward.txt").write_text("-1")
+    with pytest.raises(RuntimeError, match="did not produce reward.json"):
+        parse_reward(tmp_path, structured=True)
+
+
+@pytest.fixture
+def deepswe_task(tmp_path):
+    task = tmp_path / "task"
+    (task / "tests").mkdir(parents=True)
+    (task / "tests/Dockerfile").write_text("FROM fixture:solver\nCOPY . /tests/\n")
+    (task / "task.toml").write_text(
+        """schema_version = "1.3"
+artifacts = ["/logs/artifacts/model.patch"]
+[environment]
+docker_image = "fixture:solver"
+os = "linux"
+gpus = 0
+mcp_servers = []
+env = {}
+cpus = 2
+memory_mb = 8192
+[agent]
+network_mode = "no-network"
+timeout_sec = 10800
+[verifier]
+network_mode = "no-network"
+environment_mode = "separate"
+timeout_sec = 1800
+env = {}
+[verifier.environment]
+cpus = 3
+memory_mb = 12288
+[[verifier.collect]]
+command = "git diff --binary abc123 HEAD > /logs/artifacts/model.patch"
+timeout_sec = 300
+[solution]
+env = {}
+"""
+    )
+    return task
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ('network_mode = "no-network"', 'network_mode = "public"'),
+        ('environment_mode = "separate"', 'environment_mode = "same"'),
+        ('os = "linux"', 'os = "windows"'),
+        ("gpus = 0", "gpus = 1"),
+        ("env = {}", 'env = {SECRET = "value"}'),
+        ("artifacts/model.patch", "artifacts/other.patch"),
+        ("mcp_servers = []", 'mcp_servers = ["service"]'),
+        ("timeout_sec = 300", "timeout_sec = -1"),
+        ("[verifier.environment]", '[verifier.environment]\nuser = "root"'),
+    ],
+)
+def test_deepswe_rejects_unsupported_execution_fields(deepswe_task, before, after):
+    path = deepswe_task / "task.toml"
+    path.write_text(path.read_text().replace(before, after))
+    with pytest.raises(ValueError, match="Unsupported|Invalid DeepSWE"):
+        module.task_config(deepswe_task)
+
+
+@pytest.mark.parametrize("failure", [None, "collect", "verifier-build", "patch-symlink"])
+async def test_deepswe_isolates_solver_and_verifier(deepswe_task, tmp_path, monkeypatch, failure):
+    work = tmp_path / "result"
+    calls = []
+    hook = module.task_config(deepswe_task)["verifier"]["collect"][0]["command"]
+    patch_bytes = b"binary patch\x00\xff"
+
+    async def docker(*args, **kwargs):
+        calls.append(args)
+        if args[-1] == "git rev-parse HEAD":
+            return CommandResult("a" * 40, "", 0, 0.1)
+        if (failure == "collect" and args[-1] == hook) or (
+            failure == "verifier-build" and args[1] == "build"
+        ):
+            return CommandResult("", "injected failure", 1, 0.1)
+        if args[1] == "cp" and args[2].endswith(":/logs/artifacts/model.patch"):
+            candidate = work / "candidate.patch"
+            if failure == "patch-symlink":
+                candidate.symlink_to(work / "missing")
+            else:
+                candidate.write_bytes(patch_bytes)
+        if args[1] == "cp" and args[2].endswith(":/logs/verifier"):
+            (work / "verifier").mkdir()
+            (work / "verifier/reward.json").write_text('{"reward": 1}')
+        return CommandResult("", "", 0, 0.1)
+
+    monkeypatch.setattr(module, "command", docker)
+    sandbox = DockerSandbox(deepswe_task, work)
+    solver = sandbox.name
+
+    async def evaluate():
+        async with sandbox:
+            assert not any(a[1] in {"build", "cp", "network"} for a in calls)
+            result = await sandbox.grade()
+            assert result[0] == 1
+
+    if failure:
+        with pytest.raises(RuntimeError, match="injected failure|regular file"):
+            await evaluate()
+    else:
+        await evaluate()
+        assert (work / "candidate.patch").read_bytes() == patch_bytes
+        verifier = solver + "-verifier"
+        runs = [a for a in calls if a[1] == "run"]
+        assert len(runs) == 2
+        assert "fixture:solver" in runs[0]
+        assert "--cpus=3" in runs[1] and "--memory=12288m" in runs[1]
+        remove = calls.index(("docker", "rm", "--force", solver))
+        assert remove < calls.index(runs[1])
+        assert any(a[1] == "build" and a[-1] == str(deepswe_task / "tests") for a in calls)
+        copies = [a[2:] for a in calls if a[1] == "cp"]
+        assert copies == [
+            (solver + ":/logs/artifacts/model.patch", str(work / "candidate.patch")),
+            (str(work / "candidate.patch"), verifier + ":/logs/artifacts/model.patch"),
+            (verifier + ":/logs/verifier", str(work / "verifier")),
+        ]
+    assert any(a[-1] == hook for a in calls)
+    assert not any(a[1] == "network" or any("PROXY=" in flag for flag in a) for a in calls)
+    for args in (a for a in calls if a[1] == "run"):
+        assert args[args.index("--network") + 1] == "none"
+        assert "--cap-drop=ALL" in args and "--security-opt=no-new-privileges" in args
+        assert "CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never" in args
+        assert "TERM=xterm-256color" in args
+        name = args[args.index("--name") + 1]
+        assert ("docker", "rm", "--force", name) in calls
+    assert not sandbox._created
+
+
 @pytest.mark.parametrize(
     "config",
     [

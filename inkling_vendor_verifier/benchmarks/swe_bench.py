@@ -115,7 +115,7 @@ def prepare(data_dir: Path, bundle: Path) -> Path:
 
 class SWEBench:
     def __init__(self, subset: str = "signal"):
-        if subset not in {"signal", "verified", "pro", "multilingual"}:
+        if subset not in {"signal", "verified", "pro", "multilingual", "deepswe"}:
             raise ValueError(f"Unknown SWE-bench subset: {subset}")
         self.subset = subset
         self.name = f"swe-bench-{subset}"
@@ -236,7 +236,8 @@ class SWEBench:
             reward, grade = await sandbox.grade()
             return Evaluation(
                 score=0.0
-                if stop in {"max_tokens", "max_turns", "max_tool_calls", "timeout"}
+                if self.subset != "deepswe"
+                and stop in {"max_tokens", "max_turns", "max_tool_calls", "timeout"}
                 else reward,
                 answer=answer,
                 details={
@@ -258,7 +259,9 @@ def main() -> None:
     root, prepare_parser, run_parser = parser("swe-bench")
     for subparser in (prepare_parser, run_parser):
         subparser.add_argument(
-            "--subset", choices=("signal", "verified", "pro", "multilingual"), default="signal"
+            "--subset",
+            choices=("signal", "verified", "pro", "multilingual", "deepswe"),
+            default="signal",
         )
     prepare_parser.add_argument(
         "--bundle", type=Path, help="Pinned SWE Signal task archive (.tar.gz); required for signal"

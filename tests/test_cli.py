@@ -23,6 +23,7 @@ BENCHMARKS = (
     (swe, swe.SWEBench, "verified"),
     (swe, swe.SWEBench, "pro"),
     (swe, swe.SWEBench, "multilingual"),
+    (swe, swe.SWEBench, "deepswe"),
 )
 
 

@@ -81,8 +81,9 @@ def task(monkeypatch):
         ("timeout", 0, 0),
     ],
 )
-async def test_limits_score_zero_but_preserve_verifier_result(
-    task, tmp_path, monkeypatch, limit, tool_count, executed
+@pytest.mark.parametrize("subset", ["signal", "deepswe"])
+async def test_limits_preserve_each_benchmarks_grading_contract(
+    task, tmp_path, monkeypatch, limit, tool_count, executed, subset
 ):
     example, sandbox = task
     monkeypatch.setattr(swe, "MAX_TURNS", 1 if limit == "max_turns" else 2)
@@ -110,8 +111,9 @@ async def test_limits_score_zero_but_preserve_verifier_result(
             pytest.fail("Agent deadline did not cancel generation")
 
         monkeypatch.setattr(provider, "generate", wait_for_deadline)
-    result = await swe.SWEBench().evaluate(example, provider, Generation(30), tmp_path)
-    assert result.score == 0 and result.details["verifier_reward"] == 1
+    result = await swe.SWEBench(subset).evaluate(example, provider, Generation(30), tmp_path)
+    assert result.score == (1 if subset == "deepswe" else 0)
+    assert result.details["verifier_reward"] == 1
     assert result.details["stop_reason"] == ("max_tokens" if limit == "length" else limit)
     assert result.details["turns"] == len(provider.calls) == 1
     assert result.details["tool_calls"] == executed

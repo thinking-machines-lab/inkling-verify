@@ -6,7 +6,7 @@ grading are shared across APIs. Each API adapter is shared across all benchmarks
 
 | Script | Subsets / cases | Grading |
 | --- | --- | --- |
-| `swe_bench.py` | Signal (250), full Verified (500), Pro v1 (731), Multilingual (300) | Each task's executable tests after native bash tool calls |
+| `swe_bench.py` | Signal (250), full Verified (500), Pro v1 (731), Multilingual (300), DeepSWE v1.1 (113) | Each task's executable tests after native bash tool calls |
 | `mmmu_pro.py` | Vision, Standard-4, Standard-10 (1,730 each) | Local multiple-choice answer extraction |
 | `hle.py` | Text-only HLE (2,158) | Structured JSON judgment, with a configurable judge |
 | `niah.py` | UUID needle retrieval: 5 context lengths × 11 depths × 10 samples | Case-insensitive UUID substring in the visible answer |
@@ -21,7 +21,8 @@ tool-call state; manually constructed assistant history is unsupported.
 ## Install
 
 Python 3.12 or newer on Linux or macOS is required. SWE also needs a local Linux
-Docker daemon with access to Docker Hub. Its task images
+Docker daemon with access to the task image registries (Docker Hub and, for
+DeepSWE, public ECR). Its task images
 target Linux x86-64; use an x86-64 host for benchmark runs. No GPUs are required
 on the client host.
 
@@ -59,6 +60,7 @@ python mmmu_pro.py prepare --subset standard-10
 python swe_bench.py prepare --subset verified
 python swe_bench.py prepare --subset pro
 python swe_bench.py prepare --subset multilingual
+python swe_bench.py prepare --subset deepswe
 
 # Accept the cais/hle dataset terms on Hugging Face and authenticate first.
 export HF_TOKEN=...
@@ -111,7 +113,7 @@ The pinned bundle's SHA-256 is
 `96ffb65777436e561e84e1e77d6187bcfb7300ab0dc109d4ffc1841c95b5b38b`.
 Preparation verifies it before extraction and checks the canonical asset manifest.
 
-The full SWE source subsets come from the pinned
+The Verified, Pro and Multilingual source subsets come from the pinned
 [Harbor registry](https://github.com/harbor-framework/harbor/blob/5fcf07f5af37eba19db389c7d8916743e4591ff5/registry.json).
 `pro` selects the original 731-task Pro v1 release, not the later Pro v2 dataset.
 All source tasks are included, with no filtering based on verifier results.
@@ -119,6 +121,13 @@ Preparation downloads the pinned instructions, environment and test assets,
 omits reference solutions, and records file checksums. These source tasks retain
 their upstream timeouts and public internet policy. Their Docker base-image tags
 are upstream tags and can move; only the Signal bundle pins base-image digests.
+
+`deepswe` includes all 113 tasks from the public
+[Datacurve DeepSWE v1.1 release](https://github.com/datacurve-ai/deep-swe/tree/0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea).
+Preparation verifies the pinned Git tree and blobs, excludes reference solutions,
+and preserves the task instructions, collection hooks and graders. Solver images
+use upstream tags; verifier images are built from the pinned `tests/Dockerfile`.
+Image pulls and builds need network access; both execution phases run offline.
 
 ## Run
 
@@ -271,30 +280,42 @@ accuracy by context length and depth, alongside the shared run artifacts.
 
 ### SWE execution
 
-Each case builds its prepared environment, runs a bash-only agent, then runs the
+Each case builds or pulls its prepared environment, runs a bash-only agent, then runs the
 task's verifier. Limits are 4,096 turns, 4,096 tool calls, the configured output
 budget, and the task's agent timeout (eight hours for Signal; upstream values
 for full source subsets). Exceeding an agent limit scores
-zero even if tests subsequently pass. Bash output is capped at 16 KiB per stream;
+zero even if tests subsequently pass, except for DeepSWE, which grades the
+committed patch even when a limit is reached. Bash output is capped at 16 KiB per stream;
 the default command timeout is 300 seconds. Containers receive at least 8 GiB
 RAM, so choose concurrency to fit the host. Budget additional time and disk space
 for the public base images and Docker builds.
 
-The model's container initially contains only the build context. Verifier files
+For Signal, Verified, Pro and Multilingual, the model's container initially
+contains only the build context. Verifier files
 are copied in after the agent exits and background processes are stopped. Task
 containers have no direct external network; an HTTP(S) proxy enforces the pinned
 solve and verifier host allowlists. It supports HTTP port 80 and HTTPS port 443,
 and blocks private and link-local destinations. Of the 250 Signal tasks, 246
 disable solve-time internet and four allow selected hosts; 89 verifiers need
-allowlisted access. Full source subsets allow public HTTP(S) hosts during both
+allowlisted access. Verified, Pro and Multilingual allow public HTTP(S) hosts during both
 solving and verification, following their upstream default. This is a portable
 Docker execution environment, not a reproduction of
 another sandbox service's kernel or networking implementation.
 
+DeepSWE uses Docker `--network none` for both solving and grading, with no proxy
+or shared network. Its pinned collection command exports committed changes
+only; uncommitted edits are not submitted. The solver is removed before starting
+a fresh verifier container with the held-out tests. Only `model.patch` is copied
+across. The verifier applies it, runs tests and writes a binary `reward.json`.
+Both containers disable Cargo cache expiry and set `TERM=xterm-256color` so
+cached dependencies and Node readline tests work without network access or a TTY.
+The upstream limits are three hours for solving and 30 minutes for grading.
+
 The verifier saves the candidate patch when Git metadata is available, test
 stdout/stderr and reward artifacts. Patch-capture failures are recorded separately
 from the test result.
-A missing or invalid `reward.txt` is an infrastructure failure, not a model score of
+A missing or invalid `reward.txt` (`reward.json` for DeepSWE), or a failed DeepSWE
+patch collection, is an infrastructure failure, not a model score of
 zero. Containers and per-case networks are removed on exit; built images remain
 available for subsequent runs.
 
@@ -323,7 +344,7 @@ cancel the run and leave its coverage explicitly incomplete.
 ## Code and validation
 
 ```text
-swe_bench.py      SWE-bench Signal and full source subsets
+swe_bench.py      SWE-bench Signal, full source subsets and DeepSWE
 mmmu_pro.py       MMMU-Pro Vision and standard subsets
 hle.py            HLE with self-judging or an independent judge
 niah.py           Long-context UUID needle retrieval
