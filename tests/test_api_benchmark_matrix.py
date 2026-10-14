@@ -14,14 +14,14 @@ from unittest.mock import AsyncMock
 import pytest
 from PIL import Image
 
-from inkling_vendor_verifier import python_tools
-from inkling_vendor_verifier.benchmarks import deepswe, mmau, niah
-from inkling_vendor_verifier.benchmarks import hle_no_tools as hle
-from inkling_vendor_verifier.benchmarks import mmmu_pro as mmmu
-from inkling_vendor_verifier.benchmarks.deepswe import DeepSWE
-from inkling_vendor_verifier.runner import run
-from inkling_vendor_verifier.types import Example, Generation, Message, Text, ToolCall
-from inkling_vendor_verifier.types import Image as DisplayImage
+from inkling_verify import python_tools
+from inkling_verify.benchmarks import deepswe, mmau, niah
+from inkling_verify.benchmarks import hle_no_tools as hle
+from inkling_verify.benchmarks import mmmu_pro as mmmu
+from inkling_verify.benchmarks.deepswe import DeepSWE
+from inkling_verify.runner import run
+from inkling_verify.types import Example, Generation, Message, Text, ToolCall
+from inkling_verify.types import Image as DisplayImage
 
 APIS = ("openai-completions", "openai-responses", "anthropic")
 GENERATION = Generation(131072, temperature=None, top_p=None)

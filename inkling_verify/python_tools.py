@@ -13,14 +13,14 @@ from pathlib import Path
 
 from PIL import Image as PILImage
 
-from inkling_vendor_verifier._python_kernel import (
+from inkling_verify._python_kernel import (
     MAX_IMAGE_DIM,
     MAX_IMAGES_PER_CELL,
     MAX_TOTAL_IMAGE_BYTES,
     _truncate_text,
 )
-from inkling_vendor_verifier.sandbox import Container
-from inkling_vendor_verifier.types import Image, Message, Text, Tool
+from inkling_verify.sandbox import Container
+from inkling_verify.types import Image, Message, Text, Tool
 
 _IMAGE_BUILD_LOCK = asyncio.Lock()
 _BUILT_IMAGES: set[str] = set()
@@ -112,7 +112,7 @@ class PythonSandbox(Container):
         recipe = directory / "python-tools.Dockerfile"
         kernel = directory / "_python_kernel.py"
         digest = hashlib.sha256(recipe.read_bytes() + kernel.read_bytes()).hexdigest()
-        image = f"inkling-verifier-python:{digest}"
+        image = f"inkling-verify-python:{digest}"
         async with _IMAGE_BUILD_LOCK:
             if image not in _BUILT_IMAGES:
                 cached = await self._docker("image", "ls", "--quiet", image)

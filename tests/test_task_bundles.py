@@ -10,8 +10,8 @@ import urllib.request
 
 import pytest
 
-from inkling_vendor_verifier.benchmarks import task_bundles as bundles
-from inkling_vendor_verifier.benchmarks.deepswe import DeepSWE
+from inkling_verify.benchmarks import task_bundles as bundles
+from inkling_verify.benchmarks.deepswe import DeepSWE
 
 
 def pack(source, archive, pin):

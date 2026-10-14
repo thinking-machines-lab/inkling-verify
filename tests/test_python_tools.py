@@ -12,10 +12,10 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from PIL import Image as PILImage
 
-from inkling_vendor_verifier import python_tools
-from inkling_vendor_verifier.python_tools import SYSTEM_PROMPT, PythonSandbox
-from inkling_vendor_verifier.sandbox import CommandResult, Container
-from inkling_vendor_verifier.types import Image, Message, Text
+from inkling_verify import python_tools
+from inkling_verify.python_tools import SYSTEM_PROMPT, PythonSandbox
+from inkling_verify.sandbox import CommandResult, Container
+from inkling_verify.types import Image, Message, Text
 
 
 def encoded_image(format="PNG"):

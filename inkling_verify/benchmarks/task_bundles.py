@@ -14,7 +14,7 @@ import urllib.request
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 
-from inkling_vendor_verifier.types import Example, Message, Text
+from inkling_verify.types import Example, Message, Text
 
 
 def release() -> dict[str, str]:

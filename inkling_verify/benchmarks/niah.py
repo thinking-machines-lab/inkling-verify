@@ -15,10 +15,10 @@ from typing import Any
 from huggingface_hub import hf_hub_download
 from tokenizers import Tokenizer
 
-from inkling_vendor_verifier.benchmarks.data import read_cache, write_cache
-from inkling_vendor_verifier.cli import evaluate, parser, positive
-from inkling_vendor_verifier.runner import write_json
-from inkling_vendor_verifier.types import Evaluation, Example, Generation, Message, Provider, Text
+from inkling_verify.benchmarks.data import read_cache, write_cache
+from inkling_verify.cli import evaluate, parser, positive
+from inkling_verify.runner import write_json
+from inkling_verify.types import Evaluation, Example, Generation, Message, Provider, Text
 
 REPOSITORY = "synthetic/niah-uuid-key-to-value"
 REVISION = "1"

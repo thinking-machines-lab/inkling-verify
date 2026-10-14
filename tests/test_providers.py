@@ -8,7 +8,7 @@ import json
 import pytest
 from PIL import Image as PILImage
 
-from inkling_vendor_verifier.types import Generation, Image, Message, Text
+from inkling_verify.types import Generation, Image, Message, Text
 
 APIS = ("openai-completions", "openai-responses", "anthropic")
 GENERATION = Generation(4096, temperature=None, top_p=None, reasoning_effort=None)

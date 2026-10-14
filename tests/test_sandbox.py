@@ -5,16 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from inkling_vendor_verifier import deepswe_images
-from inkling_vendor_verifier import sandbox as module
-from inkling_vendor_verifier.benchmarks.task_bundles import release
-from inkling_vendor_verifier.deepswe_images import (
+from inkling_verify import deepswe_images
+from inkling_verify import sandbox as module
+from inkling_verify.benchmarks.task_bundles import release
+from inkling_verify.deepswe_images import (
     IMAGE_MANIFEST_SHA256,
     PLATFORM,
     solver_image,
     verifier_dockerfile,
 )
-from inkling_vendor_verifier.sandbox import (
+from inkling_verify.sandbox import (
     CommandResult,
     DockerSandbox,
     command,
@@ -198,7 +198,7 @@ async def test_verifier_shell_preserves_image_virtualenv_path(tmp_path, monkeypa
 @pytest.mark.parametrize("source", ["RUN true\n", "FROM first\nFROM second\n"])
 def test_deepswe_rejects_unexpected_verifier_image_stages(source):
     with pytest.raises(ValueError, match="one DeepSWE Dockerfile stage"):
-        verifier_dockerfile(source, "inkling-verifier-task:123")
+        verifier_dockerfile(source, "inkling-verify-task:123")
 
 
 def test_deepswe_image_pins_cover_the_release_and_have_a_resume_identity():

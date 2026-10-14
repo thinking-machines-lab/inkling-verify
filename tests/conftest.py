@@ -7,10 +7,10 @@ import pytest
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
-from inkling_vendor_verifier import providers
-from inkling_vendor_verifier.benchmarks import deepswe
-from inkling_vendor_verifier.sandbox import CommandResult
-from inkling_vendor_verifier.types import ToolCall
+from inkling_verify import providers
+from inkling_verify.benchmarks import deepswe
+from inkling_verify.sandbox import CommandResult
+from inkling_verify.types import ToolCall
 
 
 @pytest.fixture

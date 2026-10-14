@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from inkling_vendor_verifier.benchmarks.deepswe import main
+from inkling_verify.benchmarks.deepswe import main
 
 if __name__ == "__main__":
     main()

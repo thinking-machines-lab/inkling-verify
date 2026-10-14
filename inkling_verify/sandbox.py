@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
 
-from inkling_vendor_verifier.deepswe_images import (
+from inkling_verify.deepswe_images import (
     PLATFORM,
     solver_image,
     verifier_dockerfile,
@@ -77,7 +77,7 @@ class Container:
     def __init__(self, work_dir: Path, *, allow_network: bool = False):
         self.work_dir = work_dir
         self.allow_network = allow_network
-        self.name = "inkling-eval-" + uuid.uuid4().hex
+        self.name = "inkling-verify-" + uuid.uuid4().hex
         self._created: list[str] = []
 
     async def _docker(self, *args: str, **kwargs: Any) -> CommandResult:
@@ -205,7 +205,7 @@ class DockerSandbox(Container):
         dockerfile = self.work_dir / "tests.Dockerfile"
         dockerfile.write_text(recipe)
         digest.update(recipe.encode())
-        image = "inkling-verifier-task:" + digest.hexdigest()
+        image = "inkling-verify-task:" + digest.hexdigest()
         result = await self._docker(
             "build",
             "--platform",

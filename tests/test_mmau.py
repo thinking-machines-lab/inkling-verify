@@ -11,7 +11,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from inkling_vendor_verifier.benchmarks import mmau
+from inkling_verify.benchmarks import mmau
 
 
 def pcm_wav(samples, sample_rate=16000, channels=1):

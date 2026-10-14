@@ -6,15 +6,15 @@ import uuid
 import pytest
 from PIL import Image as PILImage
 
-from inkling_vendor_verifier.benchmarks import mmmu_pro
-from inkling_vendor_verifier.benchmarks.data import write_cache
-from inkling_vendor_verifier.benchmarks.mmmu_pro import (
+from inkling_verify.benchmarks import mmmu_pro
+from inkling_verify.benchmarks.data import write_cache
+from inkling_verify.benchmarks.mmmu_pro import (
     PROMPT,
     MMMUPro,
     _prepare_row,
     parse_answer,
 )
-from inkling_vendor_verifier.types import Generation, Image, Message, Response, Text, Usage
+from inkling_verify.types import Generation, Image, Message, Response, Text, Usage
 
 OPTIONS = {"A": "red", "B": "blue", "C": "green", "D": "yellow"}
 

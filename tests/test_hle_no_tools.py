@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from inkling_vendor_verifier.benchmarks import hle_no_tools as hle
-from inkling_vendor_verifier.benchmarks.hle_no_tools import (
+from inkling_verify.benchmarks import hle_no_tools as hle
+from inkling_verify.benchmarks.hle_no_tools import (
     HLE,
     JUDGE_PROMPT,
     SCHEMA_SYSTEM_INSTRUCTION,
@@ -12,8 +12,8 @@ from inkling_vendor_verifier.benchmarks.hle_no_tools import (
     _prepare_row,
     parse_verdict,
 )
-from inkling_vendor_verifier.runner import run
-from inkling_vendor_verifier.types import (
+from inkling_verify.runner import run
+from inkling_verify.types import (
     Example,
     Generation,
     Message,

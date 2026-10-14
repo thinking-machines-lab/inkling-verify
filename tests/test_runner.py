@@ -6,8 +6,8 @@ from functools import partial
 
 import pytest
 
-from inkling_vendor_verifier.runner import run
-from inkling_vendor_verifier.types import (
+from inkling_verify.runner import run
+from inkling_verify.types import (
     Evaluation,
     Example,
     Generation,

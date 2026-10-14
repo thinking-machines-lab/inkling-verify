@@ -6,11 +6,11 @@ from dataclasses import asdict, replace
 
 import pytest
 
-from inkling_vendor_verifier import cli
-from inkling_vendor_verifier.benchmarks import deepswe, mmau, niah
-from inkling_vendor_verifier.benchmarks import hle_no_tools as hle
-from inkling_vendor_verifier.benchmarks import mmmu_pro as mmmu
-from inkling_vendor_verifier.types import Example, Generation
+from inkling_verify import cli
+from inkling_verify.benchmarks import deepswe, mmau, niah
+from inkling_verify.benchmarks import hle_no_tools as hle
+from inkling_verify.benchmarks import mmmu_pro as mmmu
+from inkling_verify.types import Example, Generation
 
 BENCHMARKS = (
     (niah, niah.NIAH, None),

@@ -6,12 +6,12 @@ import pytest
 from anthropic import BadRequestError as AnthropicBadRequestError
 from openai import BadRequestError as OpenAIBadRequestError
 
-from inkling_vendor_verifier.benchmarks.deepswe import DeepSWE
-from inkling_vendor_verifier.context_limits import OUTPUT_TOKEN_FIELDS, ContextExhausted
-from inkling_vendor_verifier.providers import REQUEST_TIMEOUT_SECONDS
-from inkling_vendor_verifier.runner import RecordingProvider
-from inkling_vendor_verifier.tool_loop import run_tools
-from inkling_vendor_verifier.types import (
+from inkling_verify.benchmarks.deepswe import DeepSWE
+from inkling_verify.context_limits import OUTPUT_TOKEN_FIELDS, ContextExhausted
+from inkling_verify.providers import REQUEST_TIMEOUT_SECONDS
+from inkling_verify.runner import RecordingProvider
+from inkling_verify.tool_loop import run_tools
+from inkling_verify.types import (
     Example,
     Generation,
     Message,

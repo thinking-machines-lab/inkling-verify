@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from tokenizers import Tokenizer, models, pre_tokenizers
 
-from inkling_vendor_verifier.benchmarks import niah
+from inkling_verify.benchmarks import niah
 
 REFERENCE = json.loads((Path(__file__).parent / "fixtures" / "niah_release.json").read_text())
 GRID = {

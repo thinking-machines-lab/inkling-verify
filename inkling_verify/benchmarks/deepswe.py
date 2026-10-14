@@ -8,12 +8,12 @@ from dataclasses import asdict
 from functools import partial
 from pathlib import Path
 
-from inkling_vendor_verifier.benchmarks import task_bundles
-from inkling_vendor_verifier.cli import evaluate, parser
-from inkling_vendor_verifier.deepswe_images import IMAGE_MANIFEST_SHA256
-from inkling_vendor_verifier.sandbox import DockerSandbox
-from inkling_vendor_verifier.tool_loop import run_tools
-from inkling_vendor_verifier.types import (
+from inkling_verify.benchmarks import task_bundles
+from inkling_verify.cli import evaluate, parser
+from inkling_verify.deepswe_images import IMAGE_MANIFEST_SHA256
+from inkling_verify.sandbox import DockerSandbox
+from inkling_verify.tool_loop import run_tools
+from inkling_verify.types import (
     Evaluation,
     Example,
     Generation,

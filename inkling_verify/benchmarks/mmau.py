@@ -12,9 +12,9 @@ from collections import Counter
 from itertools import zip_longest
 from pathlib import Path
 
-from inkling_vendor_verifier.benchmarks.data import read_cache, required_text, write_cache
-from inkling_vendor_verifier.cli import evaluate, parser
-from inkling_vendor_verifier.types import (
+from inkling_verify.benchmarks.data import read_cache, required_text, write_cache
+from inkling_verify.cli import evaluate, parser
+from inkling_verify.types import (
     Audio,
     Evaluation,
     Example,

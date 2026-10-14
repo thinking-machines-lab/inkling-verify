@@ -12,15 +12,15 @@ from typing import Any
 
 import jsonschema
 
-from inkling_vendor_verifier.benchmarks.data import read_cache, required_text, write_cache
-from inkling_vendor_verifier.cli import (
+from inkling_verify.benchmarks.data import read_cache, required_text, write_cache
+from inkling_verify.cli import (
     add_api_arguments,
     evaluate,
     optional_float,
     parser,
     positive,
 )
-from inkling_vendor_verifier.types import (
+from inkling_verify.types import (
     Evaluation,
     Example,
     Generation,

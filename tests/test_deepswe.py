@@ -2,9 +2,9 @@ import asyncio
 
 import pytest
 
-from inkling_vendor_verifier.benchmarks import deepswe
-from inkling_vendor_verifier.benchmarks.deepswe import DeepSWE
-from inkling_vendor_verifier.types import (
+from inkling_verify.benchmarks import deepswe
+from inkling_verify.benchmarks.deepswe import DeepSWE
+from inkling_verify.types import (
     Example,
     Generation,
     Message,

@@ -16,10 +16,10 @@ from typing import Any
 
 from PIL import Image as PILImage
 
-from inkling_vendor_verifier.benchmarks.data import read_cache, required_text, write_cache
-from inkling_vendor_verifier.cli import evaluate, parser
-from inkling_vendor_verifier.tool_loop import run_tools
-from inkling_vendor_verifier.types import (
+from inkling_verify.benchmarks.data import read_cache, required_text, write_cache
+from inkling_verify.cli import evaluate, parser
+from inkling_verify.tool_loop import run_tools
+from inkling_verify.types import (
     Evaluation,
     Example,
     Generation,
@@ -274,7 +274,7 @@ class MMMUPro:
             parts.append(Text(prompt[start:]))
         messages = (Message("user", tuple(parts)),)
         if self.with_tools:
-            from inkling_vendor_verifier.python_tools import SYSTEM_PROMPT, TOOL, PythonSandbox
+            from inkling_verify.python_tools import SYSTEM_PROMPT, TOOL, PythonSandbox
 
             async with PythonSandbox(work_dir) as sandbox:
                 staged = await sandbox.stage(messages)
