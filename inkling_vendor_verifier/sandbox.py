@@ -16,7 +16,7 @@ from typing import Any, Self
 
 from inkling_vendor_verifier.deepswe_images import (
     PLATFORM,
-    solver_dockerfile,
+    solver_image,
     verifier_dockerfile,
 )
 
@@ -71,84 +71,6 @@ def memory_mb(environment: dict[str, Any]) -> int:
     if type(value) is not int or value <= 0:
         raise ValueError("memory_mb must be a positive integer")
     return max(8192, value)
-
-
-def task_config(task: Path) -> dict[str, Any]:
-    config = tomllib.loads((task / "task.toml").read_text())
-    if config.get("schema_version") != "1.3":
-        raise ValueError("Unsupported DeepSWE task schema")
-    sections = {
-        "metadata",
-        "environment",
-        "agent",
-        "verifier",
-        "schema_version",
-        "task",
-        "artifacts",
-        "solution",
-    }
-    if unexpected := config.keys() - sections:
-        raise ValueError(f"Unsupported task sections: {sorted(unexpected)}")
-    supported = {
-        "environment": {
-            "build_timeout_sec",
-            "cpus",
-            "memory_mb",
-            "storage_mb",
-            "docker_image",
-            "os",
-            "gpus",
-            "mcp_servers",
-            "env",
-        },
-        "agent": {"network_mode", "timeout_sec"},
-        "verifier": {
-            "network_mode",
-            "timeout_sec",
-            "environment_mode",
-            "environment",
-            "collect",
-            "env",
-        },
-    }
-    for section, keys in supported.items():
-        if extra := config[section].keys() - keys:
-            raise ValueError(f"Unsupported {section} fields: {sorted(extra)}")
-    environment, verifier = config["environment"], config["verifier"]
-    if (
-        config["artifacts"] != ["/logs/artifacts/model.patch"]
-        or config["solution"] != {"env": {}}
-        or environment["os"] != "linux"
-        or environment["gpus"] != 0
-        or environment["mcp_servers"] != []
-        or environment["env"] != {}
-        or verifier["env"] != {}
-        or verifier["environment_mode"] != "separate"
-        or config["agent"]["network_mode"] != "no-network"
-        or verifier["network_mode"] != "no-network"
-    ):
-        raise ValueError("Unsupported DeepSWE execution configuration")
-    if verifier["environment"].keys() - {
-        "build_timeout_sec",
-        "cpus",
-        "memory_mb",
-        "storage_mb",
-    }:
-        raise ValueError("Unsupported DeepSWE verifier environment")
-    memory_mb(environment)
-    memory_mb(verifier["environment"])
-    collect = verifier["collect"]
-    if len(collect) != 1 or collect[0].keys() != {"command", "timeout_sec"}:
-        raise ValueError("DeepSWE requires one patch collection command")
-    hook = collect[0]
-    if (
-        not isinstance(hook["command"], str)
-        or not hook["command"]
-        or not math.isfinite(hook["timeout_sec"])
-        or hook["timeout_sec"] <= 0
-    ):
-        raise ValueError("Invalid DeepSWE patch collection command")
-    return config
 
 
 class Container:
@@ -252,15 +174,18 @@ class DockerSandbox(Container):
     def __init__(self, task: Path, work_dir: Path, *, allow_network: bool = False):
         super().__init__(work_dir, allow_network=allow_network)
         self.task = task
-        self.config = task_config(task)
+        self.config = tomllib.loads((task / "task.toml").read_text())
+        memory_mb(self.config["environment"])
+        memory_mb(self.config["verifier"]["environment"])
         self.base_commit: str | None = None
-        self.solver_image: str | None = None
+        self.solver_image = solver_image(self.config["environment"]["docker_image"])
 
     async def start(self) -> None:
         environment = self.config["environment"]
-        image = await self._image(self.task / "environment", environment)
-        self.solver_image = image
-        await self._start_container(image, environment, platform=PLATFORM)
+        await self._start_container(self.solver_image, environment, platform=PLATFORM)
+        logs = self.work_dir / "logs"
+        (logs / "artifacts").mkdir(parents=True)
+        await self._docker("cp", str(logs), self.name + ":/")
         baseline = await self.run("git rev-parse HEAD", timeout=60)
         if baseline.exit_code or not re.fullmatch(
             r"[0-9a-f]{40}|[0-9a-f]{64}", baseline.stdout.strip()
@@ -270,19 +195,14 @@ class DockerSandbox(Container):
         if not self.base_commit.startswith(self.config["metadata"]["base_commit_hash"]):
             raise RuntimeError("Pinned DeepSWE image does not match the task's base commit")
 
-    async def _image(
-        self, context: Path, environment: dict[str, Any], solver_image: str | None = None
-    ) -> str:
+    async def _verifier_image(self) -> str:
+        context = self.task / "tests"
         digest = hashlib.sha256()
         for path in sorted(context.rglob("*")):
             if path.is_file():
                 digest.update(str(path.relative_to(context)).encode() + b"\0" + path.read_bytes())
-        recipe = (
-            verifier_dockerfile((context / "Dockerfile").read_text(), solver_image)
-            if solver_image is not None
-            else solver_dockerfile(self.config["environment"]["docker_image"])
-        )
-        dockerfile = self.work_dir / f"{context.name}.Dockerfile"
+        recipe = verifier_dockerfile((context / "Dockerfile").read_text(), self.solver_image)
+        dockerfile = self.work_dir / "tests.Dockerfile"
         dockerfile.write_text(recipe)
         digest.update(recipe.encode())
         image = "inkling-verifier-task:" + digest.hexdigest()
@@ -296,10 +216,9 @@ class DockerSandbox(Container):
             "--file",
             str(dockerfile),
             str(context),
-            timeout=float(environment.get("build_timeout_sec", 1800)),
+            timeout=float(self.config["verifier"]["environment"].get("build_timeout_sec", 1800)),
         )
-        log = "verifier-build.log" if context.name == "tests" else "build.log"
-        (self.work_dir / log).write_text(result.stdout + result.stderr)
+        (self.work_dir / "verifier-build.log").write_text(result.stdout + result.stderr)
         return image
 
     async def grade(self) -> tuple[float, dict[str, Any]]:
@@ -312,7 +231,6 @@ class DockerSandbox(Container):
             "env LOG_FILE=/logs/verifier/test-output.log bash /tests/test.sh",
             timeout=float(verifier.get("timeout_sec", 3600)),
             output_limit=1024 * 1024,
-            # Login profiles can discard the verifier image's virtualenv PATH.
             login_shell=False,
         )
         (self.work_dir / "verifier.stdout").write_text(test.stdout)
@@ -340,10 +258,9 @@ class DockerSandbox(Container):
         await self._docker("rm", "--force", self.name)
         self._created.remove(self.name)
         self.name += "-verifier"
-        assert self.solver_image is not None
-        image = await self._image(self.task / "tests", verifier["environment"], self.solver_image)
+        image = await self._verifier_image()
         await self._start_container(image, verifier["environment"], platform=PLATFORM)
-        await self._docker("exec", self.name, "mkdir", "-p", "/logs/artifacts")
+        await self._docker("cp", str(self.work_dir / "logs"), self.name + ":/")
         await self._docker("cp", str(candidate), self.name + ":/logs/artifacts/model.patch")
         return patch
 

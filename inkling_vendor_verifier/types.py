@@ -101,21 +101,9 @@ class Example:
 
 @dataclass(frozen=True)
 class Evaluation:
-    score: float
+    score: float | None
     answer: str
     details: dict[str, Any] = field(default_factory=dict)
-
-
-class JudgeFailure(ValueError):
-    """A completed judge request that cannot supply a score; do not resample the candidate."""
-
-    def __init__(self, message: str, *, candidate: Response, judgment: Response) -> None:
-        super().__init__(message)
-        self.details = {
-            "candidate_answer": candidate.text,
-            "candidate_stop_reason": candidate.stop_reason,
-            "judge_stop_reason": judgment.stop_reason,
-        }
 
 
 class Benchmark(Protocol):

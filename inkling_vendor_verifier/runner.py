@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from .types import Benchmark, Example, Generation, JudgeFailure, Message, Provider, Response, Tool
+from .types import Benchmark, Example, Generation, Message, Provider, Response, Tool
 
 
 def write_json(path: Path, value: Any) -> None:
@@ -96,7 +96,7 @@ async def run(
         except BlockingIOError as error:
             raise ValueError("Another evaluation is using this output directory") from error
         manifest = {
-            "schema_version": 2,
+            "schema_version": 3,
             "benchmark": benchmark.name,
             "configuration": configuration,
             "generation": asdict(generation),
@@ -122,38 +122,26 @@ async def run(
             write_json(manifest_path, manifest)
 
         results: dict[str, dict[str, Any]] = {}
-        failures: dict[str, dict[str, Any]] = {}
         pending: asyncio.Queue[Example] = asyncio.Queue()
         for example in examples:
             directory = output_dir / "samples" / hashlib.sha256(example.id.encode()).hexdigest()
             result_path = directory / "result.json"
-            failure_path = directory / "failure.json"
-            if result_path.exists() and failure_path.exists():
-                raise ValueError(f"Both a score and a judge failure exist for {example.id}")
             if result_path.exists():
                 result = json.loads(result_path.read_text())
-                if (
-                    result["id"] != example.id
-                    or not math.isfinite(result["score"])
-                    or not 0 <= result["score"] <= 1
+                if result["id"] != example.id or (
+                    result["score"] is not None
+                    and (not math.isfinite(result["score"]) or not 0 <= result["score"] <= 1)
                 ):
                     raise ValueError(f"Mismatched saved result for {example.id}")
                 results[example.id] = result
-            elif failure_path.exists():
-                failure = json.loads(failure_path.read_text())
-                if (
-                    failure["id"] != example.id
-                    or failure["type"] != "JudgeFailure"
-                    or "score" in failure
-                ):
-                    raise ValueError(f"Mismatched saved judge failure for {example.id}")
-                failures[example.id] = failure
             else:
                 pending.put_nowait(example)
 
         started = time.monotonic()
         previous_output_tokens = sum(
-            result["usage"]["output_tokens"] for result in results.values()
+            result["usage"]["output_tokens"]
+            for result in results.values()
+            if result["score"] is not None
         )
         recorded_usage = dict.fromkeys(("input_tokens", "output_tokens", "cached_input_tokens"), 0)
         for path in output_dir.glob("samples/*/attempt-*/call-*.json"):
@@ -161,11 +149,12 @@ async def run(
                 recorded_usage[key] += value
 
         def summary(status: str) -> dict[str, Any]:
-            completed = len(results)
-            score_sum = sum(result["score"] for result in results.values())
+            graded = [result for result in results.values() if result["score"] is not None]
+            completed = len(graded)
+            score_sum = sum(result["score"] for result in graded)
             seconds = time.monotonic() - started
             usage = {
-                key: sum(result["usage"][key] for result in results.values())
+                key: sum(result["usage"][key] for result in graded)
                 for key in ("input_tokens", "output_tokens", "cached_input_tokens")
             }
             value = {
@@ -173,8 +162,8 @@ async def run(
                 "updated_utc": datetime.now(UTC).isoformat(),
                 "expected": len(examples),
                 "completed": completed,
-                "failed": len(failures),
-                "processed": completed + len(failures),
+                "failed": len(results) - completed,
+                "processed": len(results),
                 "coverage": completed / len(examples),
                 "accuracy": score_sum / completed if status == "completed" else None,
                 "provisional_accuracy": score_sum / completed if completed else None,
@@ -214,26 +203,16 @@ async def run(
                         if judge is not None
                         else None
                     )
-                    try:
-                        evaluation = await benchmark.evaluate(
-                            example, recording, generation, attempt, judge=judge_recording
-                        )
-                    except JudgeFailure as error:
-                        fields = {
-                            "type": type(error).__name__,
-                            "message": str(error),
-                            "details": error.details,
-                        }
-                        write_json(attempt / "error.json", {"id": example.id, **fields})
-                        destination, outcomes = directory / "failure.json", failures
-                    else:
-                        if not math.isfinite(evaluation.score) or not 0 <= evaluation.score <= 1:
-                            raise ValueError(f"Invalid score for {example.id}: {evaluation.score}")
-                        fields = asdict(evaluation)
-                        destination, outcomes = directory / "result.json", results
+                    evaluation = await benchmark.evaluate(
+                        example, recording, generation, attempt, judge=judge_recording
+                    )
+                    if evaluation.score is not None and (
+                        not math.isfinite(evaluation.score) or not 0 <= evaluation.score <= 1
+                    ):
+                        raise ValueError(f"Invalid score for {example.id}: {evaluation.score}")
                     result = {
                         "id": example.id,
-                        **fields,
+                        **asdict(evaluation),
                         "seconds": time.monotonic() - case_started,
                         "attempt": attempt.name,
                         "calls": calls,
@@ -242,12 +221,12 @@ async def run(
                             for key in ("input_tokens", "output_tokens", "cached_input_tokens")
                         },
                     }
-                    write_json(destination, result)
-                    outcomes[example.id] = result
-                    summary("running")
+                    write_json(directory / "result.json", result)
+                    results[example.id] = result
+                    progress = summary("running")
                     print(
-                        f"{benchmark.name}: {len(results)}/{len(examples)} completed, "
-                        f"{len(failures)} unscored judge failures",
+                        f"{benchmark.name}: {progress['completed']}/{len(examples)} completed, "
+                        f"{progress['failed']} unscored",
                         flush=True,
                     )
                 except Exception as error:
@@ -266,6 +245,10 @@ async def run(
         except BaseException:
             summary("incomplete")
             raise
-        if len(results) + len(failures) != len(examples):
+        if len(results) != len(examples):
             raise RuntimeError("Evaluation ended without complete coverage")
-        return summary("completed_with_errors" if failures else "completed")
+        return summary(
+            "completed_with_errors"
+            if any(result["score"] is None for result in results.values())
+            else "completed"
+        )

@@ -10,7 +10,6 @@ RUN pip install --no-cache-dir --only-binary=:all: \
     scikit-learn==1.9.0 shapely==2.1.2 pandas==3.0.3 pytesseract==0.3.13
 RUN mkdir -p /sandbox/images /tmp/matplotlib
 COPY _python_kernel.py /opt/python_kernel.py
-# Keep concurrent image tools within their CPU and process limits.
 ENV MPLBACKEND=Agg MPLCONFIGDIR=/tmp/matplotlib \
     OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 WORKDIR /sandbox

@@ -187,7 +187,7 @@ async def test_completed_resume_makes_no_calls_and_has_zero_session_throughput(e
     assert second["current_session_completed_output_tokens_per_second"] == 0
     assert second["coverage"] == 1
     assert json.loads((tmp_path / "run.json").read_text()) == {
-        "schema_version": 2,
+        "schema_version": 3,
         "benchmark": "test",
         "configuration": CONFIGURATION,
         "generation": {
@@ -278,7 +278,7 @@ async def test_run_requires_prepared_dataset_manifest(execute, dataset):
     assert provider.calls == 0
 
 
-@pytest.mark.parametrize("version", [1, 3])
+@pytest.mark.parametrize("version", [2, 4])
 async def test_resume_explicitly_rejects_incompatible_manifest_schema(execute, tmp_path, version):
     (tmp_path / "run.json").write_text(json.dumps({"schema_version": version}))
     provider = ConstantProvider()

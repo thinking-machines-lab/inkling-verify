@@ -8,7 +8,40 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from inkling_vendor_verifier import providers
+from inkling_vendor_verifier.benchmarks import deepswe
+from inkling_vendor_verifier.sandbox import CommandResult
 from inkling_vendor_verifier.types import ToolCall
+
+
+@pytest.fixture
+def code_sandbox(monkeypatch):
+    class Sandbox:
+        def __init__(self):
+            self.commands = []
+            self.graded = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def run(self, command, *, workdir=None, timeout=300):
+            self.commands.append((command, workdir, timeout))
+            return CommandResult("/repo" if command == "pwd" else "fixed", "", 0, 0.01)
+
+        async def grade(self):
+            self.graded = True
+            return 1.0, {"verifier_exit_code": 0}
+
+    sandbox = Sandbox()
+
+    def create(*args, allow_network):
+        sandbox.allow_network = allow_network
+        return sandbox
+
+    monkeypatch.setattr(deepswe, "DockerSandbox", create)
+    return sandbox
 
 
 @pytest.fixture

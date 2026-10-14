@@ -34,6 +34,12 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
 
     async def evaluate(benchmark, args, **kwargs):
         captured["run"] = (benchmark, args)
+        if module is deepswe:
+            assert kwargs["benchmark_configuration"] == {
+                "agent_timeout_seconds": 43200,
+                "image_manifest_sha256": deepswe.IMAGE_MANIFEST_SHA256,
+                "allow_network": False,
+            }
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(module, "evaluate", evaluate)
@@ -76,10 +82,10 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
         assert args.output.resolve() == tmp_path / "results"
         assert args.limit is None
         assert args.reasoning_effort == (effort or ("none" if module is niah else "max"))
-        if module is hle:
-            assert args.max_output_tokens == 262144
         if module is deepswe:
             assert benchmark.allow_network is False
+            assert args.max_output_tokens == 1_000_000
+            assert args.concurrency == 4
         if module is niah:
             assert (
                 args.max_output_tokens,
@@ -239,16 +245,15 @@ def evaluation(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("api", cli.APIS)
 @pytest.mark.parametrize(
-    "benchmark,concurrency,max_tokens",
+    "benchmark,concurrency",
     [
-        (hle.HLE(), 64, 131072),
-        (mmmu.MMMUPro(), 64, 131072),
-        (deepswe.DeepSWE(), 4, 1_000_000),
-        (deepswe.DeepSWE(allow_network=True), 4, 1_000_000),
+        (hle.HLE(), 64),
+        (mmmu.MMMUPro(), 64),
+        (deepswe.DeepSWE(), 64),
     ],
 )
 async def test_cli_records_dataset_and_endpoint_without_secrets_and_marks_smoke(
-    monkeypatch, capsys, evaluation, api, benchmark, concurrency, max_tokens
+    monkeypatch, capsys, evaluation, api, benchmark, concurrency
 ):
     arguments, captured = evaluation
     prefix = "ANTHROPIC" if api == "anthropic" else "OPENAI"
@@ -276,21 +281,15 @@ async def test_cli_records_dataset_and_endpoint_without_secrets_and_marks_smoke(
     assert provider_kwargs["base_url"] == "http://local.example/v1"
     examples, _, generation, _, kwargs = captured["run"]
     assert len(examples) == 1
-    assert generation == Generation(max_tokens, temperature=None, top_p=None, reasoning_effort=None)
+    assert generation == Generation(262144, temperature=None, top_p=None, reasoning_effort=None)
     configuration = kwargs["configuration"]
     assert configuration["dataset"] == {"revision": "test", "examples_sha256": "abc"}
     assert configuration["full_dataset"] is False
     assert configuration["dataset_size"] == 2
     assert configuration["base_url"] == "http://local.example/v1"
     assert configuration["request_timeout_seconds"] == 43200
-    if isinstance(benchmark, deepswe.DeepSWE):
-        assert configuration["agent_timeout_seconds"] == 43200
     assert "secret" not in json.dumps(configuration)
     assert kwargs["concurrency"] == concurrency
-    if isinstance(benchmark, deepswe.DeepSWE) and benchmark.allow_network:
-        assert configuration["allow_network"] is True
-    else:
-        assert "allow_network" not in configuration
     assert captured["closed"] == ["candidate"]
     args.concurrency, args.max_output_tokens = 2, 123
     await cli.evaluate(benchmark, args)
@@ -301,9 +300,10 @@ async def test_cli_records_dataset_and_endpoint_without_secrets_and_marks_smoke(
 
 @pytest.mark.parametrize("module", [deepswe, hle, mmmu, niah])
 def test_only_deepswe_accepts_with_network(monkeypatch, module):
-    async def evaluate(benchmark, args):
+    async def evaluate(benchmark, args, **kwargs):
         assert isinstance(benchmark, deepswe.DeepSWE)
         assert benchmark.allow_network is True
+        assert kwargs["benchmark_configuration"]["allow_network"] is True
 
     monkeypatch.setattr(module, "evaluate", evaluate)
     monkeypatch.setattr(
@@ -347,7 +347,7 @@ async def test_missing_api_key_fails_before_provider_creation(monkeypatch, evalu
             None,
             None,
             None,
-            Generation(262144, temperature=None, top_p=None, reasoning_effort="high"),
+            Generation(262144, temperature=0, reasoning_effort="high"),
         ),
         (
             "openai-completions",

@@ -9,11 +9,9 @@ import os
 from contextlib import AsyncExitStack
 from dataclasses import asdict
 from pathlib import Path
-from typing import get_args
+from typing import Any, get_args
 from urllib.parse import urlsplit
 
-from .code_agent import AGENT_TIMEOUT_SECONDS, CodeBenchmark
-from .deepswe_images import IMAGE_MANIFEST_SHA256
 from .providers import REQUEST_TIMEOUT_SECONDS, APIProvider
 from .runner import run
 from .types import Api, Benchmark, Generation
@@ -123,6 +121,7 @@ async def evaluate(
     benchmark: Benchmark,
     args: argparse.Namespace,
     *,
+    benchmark_configuration: dict[str, Any] | None = None,
     judge_args: argparse.Namespace | None = None,
     judge_generation: Generation | None = None,
 ) -> None:
@@ -130,9 +129,8 @@ async def evaluate(
     dataset_size = len(examples)
     if args.limit is not None:
         examples = examples[: args.limit]
-    code = isinstance(benchmark, CodeBenchmark)
     generation = Generation(
-        max_tokens=args.max_output_tokens or (1_000_000 if code else 131072),
+        max_tokens=args.max_output_tokens or 262144,
         temperature=args.temperature,
         top_p=args.top_p,
         reasoning_effort=None if args.reasoning_effort == "default" else args.reasoning_effort,
@@ -141,6 +139,7 @@ async def evaluate(
         raise ValueError("top-p must be in (0, 1], or 'none'")
     candidate_config, api_key = provider_configuration(args)
     configuration = {
+        **(benchmark_configuration or {}),
         **candidate_config,
         "dataset": json.loads((args.data_dir / benchmark.cache_name / "manifest.json").read_text()),
         "dataset_size": dataset_size,
@@ -148,11 +147,6 @@ async def evaluate(
         "full_dataset": len(examples) == dataset_size,
         "request_timeout_seconds": REQUEST_TIMEOUT_SECONDS,
     }
-    if code:
-        configuration["agent_timeout_seconds"] = AGENT_TIMEOUT_SECONDS
-        configuration["image_manifest_sha256"] = IMAGE_MANIFEST_SHA256
-    if code and benchmark.allow_network:
-        configuration["allow_network"] = True
     async with AsyncExitStack() as stack:
         provider = await stack.enter_async_context(
             APIProvider(
@@ -191,7 +185,7 @@ async def evaluate(
             generation,
             args.output.resolve(),
             configuration=configuration,
-            concurrency=args.concurrency or (4 if code else 64),
+            concurrency=args.concurrency or 64,
             resume=args.resume,
             judge=judge,
         )

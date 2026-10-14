@@ -47,7 +47,7 @@ def bundle(tmp_path, monkeypatch):
         {"url": "https://api.github.com/repos/example/repo/releases/assets/42"},
     )
     pack(source, archive, pin)
-    monkeypatch.setattr(bundles, "release", lambda name: pin)
+    monkeypatch.setattr(bundles, "release", lambda: pin)
     monkeypatch.setattr(
         bundles, "_download", lambda url, destination: shutil.copyfile(archive, destination)
     )

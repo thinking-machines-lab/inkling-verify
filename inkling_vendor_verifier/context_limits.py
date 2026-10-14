@@ -55,7 +55,6 @@ def remaining_output_tokens(body: object, requested: int) -> int | None:
         or input_tokens >= context
     ):
         return None
-    # This server error comes from SGLang, which reserves one final context position.
     maximum = context - input_tokens - 1
     if maximum <= 0:
         raise ContextExhausted(input_tokens, context)

@@ -6,12 +6,10 @@ import pytest
 from anthropic import BadRequestError as AnthropicBadRequestError
 from openai import BadRequestError as OpenAIBadRequestError
 
-from inkling_vendor_verifier import code_agent
 from inkling_vendor_verifier.benchmarks.deepswe import DeepSWE
 from inkling_vendor_verifier.context_limits import OUTPUT_TOKEN_FIELDS, ContextExhausted
 from inkling_vendor_verifier.providers import REQUEST_TIMEOUT_SECONDS
 from inkling_vendor_verifier.runner import RecordingProvider
-from inkling_vendor_verifier.sandbox import CommandResult
 from inkling_vendor_verifier.tool_loop import run_tools
 from inkling_vendor_verifier.types import (
     Example,
@@ -149,38 +147,14 @@ async def test_context_retry_is_bounded(sdk_provider, api):
     assert len(requests) == 2
 
 
-class Sandbox:
-    config = {"agent": {"timeout_sec": 43200}}
-
-    def __init__(self):
-        self.commands = []
-        self.graded = False
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        pass
-
-    async def run(self, command, **kwargs):
-        self.commands.append(command)
-        return CommandResult("patched", "", 0, 0.01)
-
-    async def grade(self):
-        self.graded = True
-        return 1.0, {"verifier_exit_code": 0}
-
-
 @pytest.mark.parametrize(
     "api,termination",
     [(api, termination) for api in APIS for termination in ("rejection", "clamped")]
     + [("anthropic", "explicit")],
 )
 async def test_deepswe_context_limit_grades_existing_patch_and_keeps_recorded_usage(
-    sdk_provider, response_body, monkeypatch, tmp_path, api, termination
+    sdk_provider, response_body, code_sandbox, tmp_path, api, termination
 ):
-    sandbox = Sandbox()
-    monkeypatch.setattr(code_agent, "DockerSandbox", lambda *args, **kwargs: sandbox)
     responses = [response_body(api, "prior answer", tools=("fix",))]
     if termination == "clamped":
         responses.extend(
@@ -208,7 +182,8 @@ async def test_deepswe_context_limit_grades_existing_patch_and_keeps_recorded_us
     async with provider:
         result = await DeepSWE().evaluate(example, recorded, GENERATION, tmp_path)
     turns = 1 if termination == "rejection" else 2
-    assert result.score == 1 and sandbox.graded and sandbox.commands == ["fix"]
+    assert result.score == 1 and code_sandbox.graded
+    assert code_sandbox.commands == [("fix", None, 300)]
     assert result.answer == ("prior answer" if termination == "rejection" else "final answer")
     assert result.details["stop_reason"] == "context_limit"
     assert result.details["turns"] == len(recorded.calls) == turns

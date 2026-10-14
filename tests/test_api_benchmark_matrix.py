@@ -12,13 +12,12 @@ from unittest.mock import AsyncMock
 import pytest
 from PIL import Image
 
-from inkling_vendor_verifier import code_agent, python_tools
+from inkling_vendor_verifier import python_tools
+from inkling_vendor_verifier.benchmarks import deepswe, niah
 from inkling_vendor_verifier.benchmarks import hle_no_tools as hle
 from inkling_vendor_verifier.benchmarks import mmmu_pro as mmmu
-from inkling_vendor_verifier.benchmarks import niah
 from inkling_vendor_verifier.benchmarks.deepswe import DeepSWE
 from inkling_vendor_verifier.runner import run
-from inkling_vendor_verifier.sandbox import CommandResult
 from inkling_vendor_verifier.types import Example, Generation, Message, Text, ToolCall
 from inkling_vendor_verifier.types import Image as DisplayImage
 
@@ -106,13 +105,13 @@ async def test_niah_uses_same_prompt_and_visible_answer_across_apis(
 @pytest.mark.parametrize(
     "judge_api, generation, judge_generation, answer",
     [
-        (None, Generation(131072, reasoning_effort="max"), None, "Exact Answer: 4"),
-        (None, GENERATION, None, ""),
+        (None, Generation(262144, reasoning_effort="max"), hle.JUDGE_GENERATION, "Exact Answer: 4"),
+        (None, GENERATION, hle.JUDGE_GENERATION, ""),
     ]
     + [
         (judge, GENERATION, settings, "Exact Answer: 4")
         for judge in APIS
-        for settings in (None, Generation(50, 0.5, 0.9, "low"))
+        for settings in (hle.JUDGE_GENERATION, Generation(50, 0.5, 0.9, "low"))
     ],
 )
 async def test_hle_generates_and_judges_across_apis(
@@ -160,14 +159,7 @@ async def test_hle_generates_and_judges_across_apis(
         result = await hle.HLE(judge_generation).evaluate(
             example, candidate, generation, tmp_path, judge=judge
         )
-    expected_judge = judge_generation or (
-        Generation(262144, None, None, "high")
-        if judge_api is None and generation.temperature is None
-        else hle.JUDGE_GENERATION
-    )
-    if judge_generation is None:
-        assert expected_judge.reasoning_effort == "high"
-        assert expected_judge.max_tokens == 262144
+    expected_judge = judge_generation
     assert result.score == 1 and result.answer == "4"
     assert result.details["verdict"] == verdict
     assert result.details["judge_temperature"] == expected_judge.temperature
@@ -253,11 +245,15 @@ async def test_mmmu_sends_original_png_and_scores_shared_parser(
     image_path.write_bytes(image_bytes)
     example = Example(
         "vision",
-        (),
+        (Message("user", (Text("<image 1>" + mmmu.PROMPT),)),),
         "B",
         {
-            "image_path": str(image_path),
-            "image_sha256": hashlib.sha256(image_bytes).hexdigest(),
+            "images": {
+                "image_1": {
+                    "image_path": str(image_path),
+                    "image_sha256": hashlib.sha256(image_bytes).hexdigest(),
+                }
+            },
             "options": {"A": "triangle", "B": "rectangle"},
         },
     )
@@ -290,35 +286,11 @@ async def test_mmmu_sends_original_png_and_scores_shared_parser(
     assert base64.b64decode(encoded) == image_bytes
 
 
-class Sandbox:
-    config = {"agent": {"network_mode": "no-network"}, "verifier": {"network_mode": "no-network"}}
-
-    def __init__(self):
-        self.commands = []
-        self.graded = False
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        pass
-
-    async def run(self, command, *, workdir, timeout):
-        self.commands.append((command, workdir, timeout))
-        return CommandResult("/repo" if command == "pwd" else "fixed", "", 0, 0.01)
-
-    async def grade(self):
-        self.graded = True
-        return 1.0, {"verifier_exit_code": 0}
-
-
 @pytest.mark.parametrize("api", APIS)
 @pytest.mark.parametrize("tool_text", ["I will inspect the repository.", None])
 async def test_deepswe_native_tool_loop_and_grading(
-    monkeypatch, sdk_provider, reply, tmp_path, api, tool_text
+    code_sandbox, sdk_provider, reply, tmp_path, api, tool_text
 ):
-    sandbox = Sandbox()
-    monkeypatch.setattr(code_agent, "DockerSandbox", lambda *args, **kwargs: sandbox)
     first_response = reply(api, tool_text, tools=("pwd", "printf fixed"))
     provider, requests = sdk_provider(
         api,
@@ -341,11 +313,11 @@ async def test_deepswe_native_tool_loop_and_grading(
     assert result.score == 1 and result.answer == "Fixed."
     assert result.details["turns"] == 2 and result.details["tool_calls"] == 2
     assert result.details["generated_tokens"] == 10
-    assert sandbox.commands == [("pwd", None, 300), ("printf fixed", None, 300)]
-    assert sandbox.graded
+    assert code_sandbox.commands == [("pwd", None, 300), ("printf fixed", None, 300)]
+    assert code_sandbox.graded
     bodies = [json.loads(request.content) for request in requests]
     assert len(bodies) == 2
-    expected_tool = code_agent.bash_tool()
+    expected_tool = deepswe.bash_tool()
     for body in bodies:
         tool = body["tools"][0]
         if api == "openai-completions":
@@ -376,7 +348,7 @@ async def test_deepswe_native_tool_loop_and_grading(
 
 
 @pytest.mark.parametrize("api", APIS)
-async def test_hle_invalid_judge_is_error_across_protocols(sdk_provider, reply, tmp_path, api):
+async def test_hle_invalid_judge_is_unscored_across_protocols(sdk_provider, reply, tmp_path, api):
     provider, requests = sdk_provider(
         api,
         [reply(api, "4"), reply(api, "not JSON")],
@@ -393,17 +365,16 @@ async def test_hle_invalid_judge_is_error_across_protocols(sdk_provider, reply, 
         },
     )
     async with provider:
-        with pytest.raises(ValueError, match="invalid ExtractedAnswer"):
-            await hle.HLE().evaluate(example, provider, GENERATION, tmp_path)
+        result = await hle.HLE().evaluate(example, provider, GENERATION, tmp_path)
+    assert result.score is None
+    assert "invalid ExtractedAnswer" in result.details["reason"]
     assert len(requests) == 2
 
 
 @pytest.mark.parametrize("api", APIS)
 async def test_deepswe_nul_command_returns_tool_error_and_continues(
-    monkeypatch, sdk_provider, reply, tmp_path, api
+    code_sandbox, sdk_provider, reply, tmp_path, api
 ):
-    sandbox = Sandbox()
-    monkeypatch.setattr(code_agent, "DockerSandbox", lambda *args, **kwargs: sandbox)
     invalid = "printf 'prefix\x00suffix'"
     provider, requests = sdk_provider(
         api, [reply(api, None, tools=(invalid, "pwd")), reply(api, "Fixed.")]
@@ -411,8 +382,8 @@ async def test_deepswe_nul_command_returns_tool_error_and_continues(
     example = Example("nul", (), "", {"task_dir": str(tmp_path), "suite": "deepswe"})
     async with provider:
         result = await DeepSWE().evaluate(example, provider, GENERATION, tmp_path)
-    assert sandbox.commands == [("pwd", None, 300)]
-    assert sandbox.graded and result.score == 1
+    assert code_sandbox.commands == [("pwd", None, 300)]
+    assert code_sandbox.graded and result.score == 1
     assert result.details["turns"] == 2 and result.details["tool_calls"] == 2
     second_request = json.loads(requests[1].content)
     assert "command contains a NUL character; command was not executed" in json.dumps(
@@ -421,18 +392,17 @@ async def test_deepswe_nul_command_returns_tool_error_and_continues(
 
 
 @pytest.mark.parametrize("field", ["command", "workdir"])
-async def test_bash_rejects_nul_arguments_without_changing_valid_escapes(field):
-    sandbox = Sandbox()
+async def test_bash_rejects_nul_arguments_without_changing_valid_escapes(code_sandbox, field):
     args = {"command": r"printf '\\0'", "workdir": "/repo"}
     original = args.copy()
     args[field] += "\x00"
-    result = await code_agent.run_bash(sandbox, json.dumps(args))
+    result = await deepswe.run_bash(code_sandbox, json.dumps(args))
     assert json.loads(result[0].text) == {
         "error": f"{field} contains a NUL character; command was not executed"
     }
-    assert sandbox.commands == []
-    await code_agent.run_bash(sandbox, json.dumps(original))
-    assert sandbox.commands == [(original["command"], "/repo", 300)]
+    assert code_sandbox.commands == []
+    await deepswe.run_bash(code_sandbox, json.dumps(original))
+    assert code_sandbox.commands == [(original["command"], "/repo", 300)]
 
 
 @pytest.mark.parametrize("api", APIS)
@@ -487,10 +457,14 @@ async def test_mmmu_tools_multi_turn_images_scoring_and_resume(
     }
     example = Example(
         "with-tools",
-        (Message("user", (Text("Read <image 1>."),)),),
+        (
+            Message(
+                "user",
+                (Text("<image 1>" + mmmu.PROMPT if subset == "vision" else "Read <image 1>."),),
+            ),
+        ),
         "B",
-        {"options": {"A": "triangle", "B": "rectangle"}}
-        | (image_record if subset == "vision" else {"images": {"image_1": image_record}}),
+        {"options": {"A": "triangle", "B": "rectangle"}, "images": {"image_1": image_record}},
     )
     calls = [
         ToolCall("crop", "ipython", json.dumps({"code": "display(image)"})),

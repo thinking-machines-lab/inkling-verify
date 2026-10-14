@@ -137,23 +137,29 @@ def _prepare_row(row: dict[str, Any], directory: Path, subset: str = "vision") -
     if answer not in options:
         raise ValueError(f"Invalid answer for {source_id}")
     task_id = _task_id(source_id, subset)
-    prepared = {
+    if subset == "vision":
+        prompt = "<image 1>" + PROMPT
+        images = {"image_1": row["image"]}
+    else:
+        prompt = _standard_prompt(required_text(row, "question"), options)
+        images = {
+            f"image_{index}": row[f"image_{index}"]
+            for index in range(1, 8)
+            if row[f"image_{index}"] is not None
+        }
+    _validate_image_references(prompt, images, source_id)
+    return {
         "id": task_id,
         "source_id": source_id,
         "subject": subject,
         "options": options,
         "answer": answer,
+        "prompt": prompt,
+        "images": {
+            key: _save_image(image, directory, f"{task_id}-{key}.png", source_id)
+            for key, image in images.items()
+        },
     }
-    if subset == "vision":
-        return prepared | _save_image(row["image"], directory, f"{task_id}.png", source_id)
-    question = required_text(row, "question")
-    images = {}
-    for index in range(1, 8):
-        key = f"image_{index}"
-        if row[key] is not None:
-            images[key] = _save_image(row[key], directory, f"{task_id}-{key}.png", source_id)
-    _validate_image_references(_standard_prompt(question, options), images, source_id)
-    return prepared | {"question": question, "images": images}
 
 
 def _load_image(directory: Path, record: dict[str, str], filename: str) -> dict[str, str]:
@@ -213,37 +219,34 @@ class MMMUPro:
         rows = read_cache(directory, repository=REPOSITORY, revision=REVISION, count=EXPECTED_COUNT)
         examples = []
         for row in rows:
+            if "prompt" not in row:
+                raise ValueError("Unsupported MMMU-Pro cache format; prepare in a fresh data-dir")
             if row["id"] != _task_id(required_text(row, "source_id"), self.subset):
                 raise ValueError(f"MMMU-Pro {self.subset} example ID differs: {row['id']}")
             options = row["options"]
             if not isinstance(options, dict) or row["answer"] not in options:
                 raise ValueError(f"Invalid choices for {row['id']}")
-            metadata = {
-                "subject": row["subject"],
-                "source_id": row["source_id"],
-                "options": options,
-            }
-            if self.subset == "vision":
-                prompt = PROMPT
-                metadata.update(_load_image(directory, row, f"{row['id']}.png"))
-            else:
-                prompt = _standard_prompt(required_text(row, "question"), options)
-                images = row["images"]
-                if not isinstance(images, dict) or not set(images) <= {
-                    f"image_{index}" for index in range(1, 8)
-                }:
-                    raise ValueError(f"Invalid images for {row['id']}")
-                _validate_image_references(prompt, images, row["id"])
-                metadata["images"] = {
-                    key: _load_image(directory, record, f"{row['id']}-{key}.png")
-                    for key, record in images.items()
-                }
+            prompt = required_text(row, "prompt")
+            images = row["images"]
+            if not isinstance(images, dict) or not set(images) <= {
+                f"image_{index}" for index in range(1, 8)
+            }:
+                raise ValueError(f"Invalid images for {row['id']}")
+            _validate_image_references(prompt, images, row["id"])
             examples.append(
                 Example(
                     id=row["id"],
                     messages=(Message("user", (Text(prompt),)),),
                     target=row["answer"],
-                    metadata=metadata,
+                    metadata={
+                        "subject": row["subject"],
+                        "source_id": row["source_id"],
+                        "options": options,
+                        "images": {
+                            key: _load_image(directory, record, f"{row['id']}-{key}.png")
+                            for key, record in images.items()
+                        },
+                    },
                 )
             )
         return examples
@@ -257,23 +260,19 @@ class MMMUPro:
         *,
         judge: Provider | None = None,
     ) -> Evaluation:
-        if self.subset == "vision":
-            content = (_read_image(example.metadata), Text(PROMPT))
-        else:
-            prompt = example.messages[0].text
-            images = example.metadata["images"]
-            _validate_image_references(prompt, images, example.id)
-            parts: list[Text | Image] = []
-            start = 0
-            for match in IMAGE_TOKEN.finditer(prompt):
-                if match.start() > start:
-                    parts.append(Text(prompt[start : match.start()]))
-                parts.append(_read_image(images[f"image_{int(match[1])}"]))
-                start = match.end()
-            if start < len(prompt):
-                parts.append(Text(prompt[start:]))
-            content = tuple(parts)
-        messages = (Message("user", content),)
+        prompt = example.messages[0].text
+        images = example.metadata["images"]
+        _validate_image_references(prompt, images, example.id)
+        parts: list[Text | Image] = []
+        start = 0
+        for match in IMAGE_TOKEN.finditer(prompt):
+            if match.start() > start:
+                parts.append(Text(prompt[start : match.start()]))
+            parts.append(_read_image(images[f"image_{int(match[1])}"]))
+            start = match.end()
+        if start < len(prompt):
+            parts.append(Text(prompt[start:]))
+        messages = (Message("user", tuple(parts)),)
         if self.with_tools:
             from inkling_vendor_verifier.python_tools import SYSTEM_PROMPT, TOOL, PythonSandbox
 

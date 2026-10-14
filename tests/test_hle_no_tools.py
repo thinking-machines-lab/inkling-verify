@@ -16,7 +16,6 @@ from inkling_vendor_verifier.runner import run
 from inkling_vendor_verifier.types import (
     Example,
     Generation,
-    JudgeFailure,
     Message,
     Response,
     Text,
@@ -136,24 +135,9 @@ def test_prepare_load_filters_images_preserves_prompts_and_reuses_pinned_cache(
     assert calls == [(hle.REPOSITORY, "test", hle.REVISION)]
 
 
-@pytest.mark.parametrize("stop_reason", ["length", "refusal", "tool_calls"])
-async def test_incomplete_judgments_do_not_become_wrong_answers(tmp_path, stop_reason):
-    class FakeProvider:
-        calls = 0
-
-        async def generate(self, messages, generation, **kwargs):
-            self.calls += 1
-            reason = "stop" if self.calls == 1 else stop_reason
-            return Response(
-                Message("assistant", (Text(json.dumps(VERDICT)),)), Usage(1, 2), reason, {}, {}
-            )
-
-    example = Example("task", (), "4", {"question": "Question"})
-    with pytest.raises(JudgeFailure, match="did not complete"):
-        await HLE().evaluate(example, FakeProvider(), Generation(100), tmp_path)
-
-
-@pytest.mark.parametrize("failure", ["length", "refusal", "tool_calls", "invalid_json"])
+@pytest.mark.parametrize(
+    "failure", ["length", "context_limit", "refusal", "tool_calls", "invalid_json"]
+)
 @pytest.mark.parametrize("all_failed", [False, True])
 async def test_judge_failures_are_unscored_terminal_and_do_not_abort_other_cases(
     tmp_path, failure, all_failed
@@ -184,16 +168,23 @@ async def test_judge_failures_are_unscored_terminal_and_do_not_abort_other_cases
     assert summary["accuracy"] is None
     assert summary["provisional_accuracy"] == (None if all_failed else 1.0)
     assert summary["recorded_usage"]["output_tokens"] == 8
+    assert summary["usage"]["output_tokens"] == (0 if all_failed else 4)
     assert provider.calls == 4
     first = tmp_path / "samples" / hashlib.sha256(b"0").hexdigest()
-    assert not (first / "result.json").exists()
-    saved = json.loads((first / "failure.json").read_text())
-    assert "score" not in saved
-    assert saved["type"] == "JudgeFailure"
-    assert saved["details"]["candidate_answer"] == "candidate"
+    saved = json.loads((first / "result.json").read_text())
+    assert saved["score"] is None
+    assert saved["answer"] == "candidate"
+    assert saved["usage"]["output_tokens"] == 4
+    assert saved["details"]["reason"].startswith(
+        "HLE judge returned an invalid"
+        if failure == "invalid_json"
+        else "HLE judge did not complete"
+    )
     assert saved["details"]["judge_stop_reason"] == (
         "stop" if failure == "invalid_json" else failure
     )
+    assert not list(first.rglob("error.json"))
+    assert not (first / "failure.json").exists()
     original = {p: p.read_bytes() for p in first.rglob("*.json")}
     resumed = await run(
         HLE(), examples, provider, Generation(100), tmp_path, **options, resume=True

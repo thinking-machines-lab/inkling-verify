@@ -13,13 +13,12 @@ IMAGE_MANIFEST_SHA256 = hashlib.sha256(_manifest_bytes).hexdigest()
 PLATFORM = _manifest["platform"]
 
 
-def solver_dockerfile(configured_image: str) -> str:
+def solver_image(configured_image: str) -> str:
     try:
         digest = _manifest["images"][configured_image]
     except KeyError:
         raise ValueError(f"No pinned DeepSWE image for {configured_image!r}") from None
-    image = configured_image.rsplit(":", 1)[0] + "@" + digest
-    return f"FROM {image}\nRUN mkdir -p /logs/artifacts\n"
+    return configured_image.rsplit(":", 1)[0] + "@" + digest
 
 
 def verifier_dockerfile(source: str, solver_image: str) -> str:

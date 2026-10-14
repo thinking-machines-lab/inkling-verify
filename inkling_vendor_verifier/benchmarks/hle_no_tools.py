@@ -7,7 +7,6 @@ import asyncio
 import json
 import tempfile
 import uuid
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +24,6 @@ from inkling_vendor_verifier.types import (
     Evaluation,
     Example,
     Generation,
-    JudgeFailure,
     Message,
     Provider,
     Text,
@@ -124,7 +122,7 @@ class HLE:
     name = "hle"
     cache_name = DATASET_NAME
 
-    def __init__(self, judge_generation: Generation | None = None) -> None:
+    def __init__(self, judge_generation: Generation = JUDGE_GENERATION) -> None:
         self.judge_generation = judge_generation
 
     def prepare(self, data_dir: Path) -> None:
@@ -189,44 +187,43 @@ class HLE:
             correct_answer=example.target,
             response=candidate.text,
         )
-        judge_generation = self.judge_generation or replace(
-            JUDGE_GENERATION,
-            temperature=None if judge is None and generation.temperature is None else 0.0,
-            top_p=None if judge is None and generation.top_p is None else 1.0,
-        )
         judgment = await (judge if judge is not None else provider).generate(
             (
                 Message("system", (Text(SCHEMA_SYSTEM_INSTRUCTION),)),
                 Message("user", (Text(prompt),)),
             ),
-            judge_generation,
+            self.judge_generation,
             response_schema=JUDGE_SCHEMA,
         )
+        details = {
+            "candidate_stop_reason": candidate.stop_reason,
+            "judge_stop_reason": judgment.stop_reason,
+            "judge_temperature": self.judge_generation.temperature,
+            "judge_top_p": self.judge_generation.top_p,
+        }
         if judgment.stop_reason != "stop" or judgment.message.tool_calls:
-            raise JudgeFailure(
-                f"HLE judge did not complete a verdict: {judgment.stop_reason}",
-                candidate=candidate,
-                judgment=judgment,
+            return Evaluation(
+                None,
+                candidate.text,
+                details
+                | {"reason": f"HLE judge did not complete a verdict: {judgment.stop_reason}"},
             )
         try:
             verdict = parse_verdict(judgment.text)
         except ValueError as error:
-            raise JudgeFailure(str(error), candidate=candidate, judgment=judgment) from error
+            return Evaluation(None, candidate.text, details | {"reason": str(error)})
         return Evaluation(
             float(verdict["correct"] == "yes"),
             verdict["extracted_final_answer"],
-            {
-                "verdict": verdict,
-                "candidate_stop_reason": candidate.stop_reason,
-                "judge_temperature": judge_generation.temperature,
-                "judge_top_p": judge_generation.top_p,
-            },
+            details | {"verdict": verdict},
         )
 
 
 def judge_settings(args: argparse.Namespace) -> tuple[argparse.Namespace | None, Generation]:
-    fields = ("api", "model", "base_url", "api_key_env")
-    separate = any(getattr(args, f"judge_{field}") is not None for field in fields)
+    separate = any(
+        value is not None
+        for value in (args.judge_api, args.judge_model, args.judge_base_url, args.judge_api_key_env)
+    )
     judge_args = None
     if separate:
         api = args.judge_api or args.api
@@ -239,10 +236,8 @@ def judge_settings(args: argparse.Namespace) -> tuple[argparse.Namespace | None,
         )
     generation = Generation(
         max_tokens=args.judge_max_output_tokens,
-        temperature=getattr(
-            args, "judge_temperature", None if not separate and args.temperature is None else 0.0
-        ),
-        top_p=getattr(args, "judge_top_p", None if not separate and args.top_p is None else 1.0),
+        temperature=args.judge_temperature,
+        top_p=args.judge_top_p,
         reasoning_effort=(
             None if args.judge_reasoning_effort == "default" else args.judge_reasoning_effort
         ),
@@ -254,16 +249,18 @@ def judge_settings(args: argparse.Namespace) -> tuple[argparse.Namespace | None,
 
 def main() -> None:
     root, _, run_parser = parser("HLE without tools")
-    run_parser.set_defaults(max_output_tokens=262144)
     add_api_arguments(run_parser, prefix="judge-")
     run_parser.add_argument(
         "--judge-max-output-tokens", type=positive, default=JUDGE_GENERATION.max_tokens
     )
     run_parser.add_argument(
-        "--judge-temperature", type=optional_float, default=argparse.SUPPRESS, metavar="FLOAT|none"
+        "--judge-temperature",
+        type=optional_float,
+        default=JUDGE_GENERATION.temperature,
+        metavar="FLOAT|none",
     )
     run_parser.add_argument(
-        "--judge-top-p", type=optional_float, default=argparse.SUPPRESS, metavar="FLOAT|none"
+        "--judge-top-p", type=optional_float, default=JUDGE_GENERATION.top_p, metavar="FLOAT|none"
     )
     run_parser.add_argument(
         "--judge-reasoning-effort",

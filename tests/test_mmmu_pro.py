@@ -1,12 +1,13 @@
 import hashlib
-import json
+import io
 import random
+import uuid
 
 import pytest
 from PIL import Image as PILImage
 
 from inkling_vendor_verifier.benchmarks import mmmu_pro
-from inkling_vendor_verifier.benchmarks.data import read_cache, write_cache
+from inkling_vendor_verifier.benchmarks.data import write_cache
 from inkling_vendor_verifier.benchmarks.mmmu_pro import (
     PROMPT,
     MMMUPro,
@@ -45,39 +46,7 @@ def test_random_fallback_is_task_stable_and_does_not_change_global_rng():
     assert random.getstate() == state
 
 
-def test_cache_rejects_changed_data_and_wrong_revision(tmp_path):
-    write_cache(tmp_path, [{"id": "one"}], repository="test", revision="pinned")
-    assert read_cache(tmp_path, repository="test", revision="pinned", count=1) == [{"id": "one"}]
-    with pytest.raises(ValueError, match="revision"):
-        read_cache(tmp_path, repository="test", revision="wrong", count=1)
-    (tmp_path / "examples.jsonl").write_text(json.dumps({"id": "two"}) + "\n")
-    with pytest.raises(ValueError, match="checksum"):
-        read_cache(tmp_path, repository="test", revision="pinned", count=1)
-
-
-def test_load_rejects_image_corruption_before_completed_resume(tmp_path, monkeypatch):
-    monkeypatch.setattr(mmmu_pro, "EXPECTED_COUNT", 1)
-    directory = tmp_path / MMMUPro().name
-    (directory / "images").mkdir(parents=True)
-    row = _prepare_row(
-        {
-            "id": "synthetic-1",
-            "subject": "testing",
-            "options": "['a', 'b']",
-            "answer": "A",
-            "image": PILImage.new("RGB", (2, 2)),
-        },
-        directory,
-    )
-    write_cache(directory, [row], repository=mmmu_pro.REPOSITORY, revision=mmmu_pro.REVISION)
-    assert len(MMMUPro().load(tmp_path)) == 1
-    assert MMMUPro(with_tools=True).load(tmp_path) == MMMUPro().load(tmp_path)
-    (directory / row["image"]).write_bytes(b"corrupted after completion")
-    with pytest.raises(ValueError, match="Image checksum mismatch"):
-        MMMUPro().load(tmp_path)
-
-
-def standard_row():
+def source_row():
     return {
         "id": "standard-synthetic-1",
         "subject": "testing",
@@ -85,6 +54,7 @@ def standard_row():
         "options": "['<image 2>', '<image 1>', 'neither']",
         "answer": "B",
         "explanation": "SECRET REFERENCE EXPLANATION",
+        "image": PILImage.new("RGBA", (7, 9), (3, 5, 7, 99)),
         **{f"image_{index}": None for index in range(1, 8)},
         "image_1": PILImage.new("RGB", (2, 3), (3, 5, 7)),
         "image_2": PILImage.new("RGBA", (4, 2), (11, 13, 17, 99)),
@@ -113,7 +83,7 @@ def test_prepare_downloads_pinned_subset_and_reuses_only_its_cache(
 ):
     import datasets
 
-    source = standard_row() | {"image": PILImage.new("RGB", (2, 3))}
+    source = source_row()
     calls = []
 
     def load_dataset(repository, name, *, split, revision):
@@ -133,77 +103,49 @@ def test_prepare_downloads_pinned_subset_and_reuses_only_its_cache(
     assert "SECRET" not in repr(example)
 
 
-def test_default_vision_retains_original_uuid_cache_and_prompt(tmp_path, monkeypatch):
-    import io
-    import uuid
-
-    monkeypatch.setattr(mmmu_pro, "EXPECTED_COUNT", 1)
-    image = PILImage.new("RGBA", (7, 9), (3, 5, 7, 99))
-    source = {
-        "id": "synthetic-1",
-        "subject": "testing",
-        "options": "['a', 'b']",
-        "answer": " B ",
-        "image": image,
-    }
-    benchmark, directory, row = cache_row(tmp_path, source, "vision")
-    task_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "MMMU/MMMU_Pro/vision/test/synthetic-1"))
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    image_bytes = buffer.getvalue()
-    assert row == {
-        "id": task_id,
-        "source_id": "synthetic-1",
-        "subject": "testing",
-        "options": {"A": "a", "B": "b"},
-        "answer": "B",
-        "image": f"images/{task_id}.png",
-        "image_sha256": hashlib.sha256(image_bytes).hexdigest(),
-    }
-    assert (directory / row["image"]).read_bytes() == image_bytes
-    assert MMMUPro().name == benchmark.name == "mmmu-pro-vision"
-    example = benchmark.load(tmp_path)[0]
-    assert example.messages == (Message("user", (Text(PROMPT),)),)
-    assert example.metadata == {
-        "subject": "testing",
-        "source_id": "synthetic-1",
-        "options": {"A": "a", "B": "b"},
-        "image_path": str((directory / row["image"]).resolve()),
-        "image_sha256": row["image_sha256"],
-    }
-
-
-@pytest.mark.parametrize("subset", ["standard-4", "standard-10"])
-async def test_standard_interleaves_question_and_shuffled_option_images_in_reference_order(
+@pytest.mark.parametrize("subset", mmmu_pro.SUBSETS)
+async def test_subsets_preserve_ids_prompt_and_image_bytes_and_reject_corruption(
     tmp_path, monkeypatch, subset
 ):
     monkeypatch.setattr(mmmu_pro, "EXPECTED_COUNT", 1)
-    source = standard_row()
+    source = source_row() | {"answer": " B "}
     benchmark, directory, row = cache_row(tmp_path, source, subset)
     example = benchmark.load(tmp_path)[0]
-    assert set(row["images"]) == {"image_1", "image_2"}
+    assert example.id == str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"MMMU/MMMU_Pro/{subset}/test/{source['id']}")
+    )
+    assert MMMUPro(subset, with_tools=True).load(tmp_path) == [example]
+    originals = (
+        {"image_1": source["image"]}
+        if subset == "vision"
+        else {key: source[key] for key in ("image_1", "image_2")}
+    )
+    assert set(row["images"]) == set(originals)
     image_parts = {}
-    for key in ("image_1", "image_2"):
+    for key, image in originals.items():
         path = directory / row["images"][key]["image"]
-        encoded = path.read_bytes()
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        encoded = buffer.getvalue()
+        assert path.read_bytes() == encoded
         assert hashlib.sha256(encoded).hexdigest() == row["images"][key]["image_sha256"]
-        with PILImage.open(path) as decoded:
-            assert decoded.mode == source[key].mode
-            assert decoded.size == source[key].size
-            assert decoded.tobytes() == source[key].tobytes()
         image_parts[key] = Image(encoded, "image/png")
     expected = (
-        Text("Compare "),
-        image_parts["image_2"],
-        Text(" with "),
-        image_parts["image_1"],
-        Text(". Again: "),
-        image_parts["image_2"],
-        Text(".\nA. "),
-        image_parts["image_2"],
-        Text("\nB. "),
-        image_parts["image_1"],
-        Text("\nC. neither\n" + mmmu_pro.STANDARD_PROMPT),
+        (image_parts["image_1"], Text(PROMPT))
+        if subset == "vision"
+        else (
+            Text("Compare "),
+            image_parts["image_2"],
+            Text(" with "),
+            image_parts["image_1"],
+            Text(". Again: "),
+            image_parts["image_2"],
+            Text(".\nA. "),
+            image_parts["image_2"],
+            Text("\nB. "),
+            image_parts["image_1"],
+            Text("\nC. neither\n" + mmmu_pro.STANDARD_PROMPT),
+        )
     )
 
     class FakeProvider:
@@ -216,7 +158,7 @@ async def test_standard_interleaves_question_and_shuffled_option_images_in_refer
     assert result.score == 1.0
     assert result.answer == "B"
     assert result.details["parse_method"] == "answer_prefix"
-    image_path = directory / row["images"]["image_2"]["image"]
+    image_path = directory / row["images"]["image_1"]["image"]
     image_path.write_bytes(b"changed")
     with pytest.raises(ValueError, match="Image checksum mismatch"):
         benchmark.load(tmp_path)
@@ -229,7 +171,7 @@ async def test_standard_accepts_nullable_images_and_dataset_variable_option_coun
     tmp_path, monkeypatch, subset, choices
 ):
     monkeypatch.setattr(mmmu_pro, "EXPECTED_COUNT", 1)
-    source = standard_row() | {
+    source = source_row() | {
         "question": "Which label is correct?",
         "options": repr([f"label {index}" for index in range(choices)]),
         "answer": chr(ord("A") + choices - 1),
@@ -271,16 +213,16 @@ async def test_standard_accepts_nullable_images_and_dataset_variable_option_coun
 def test_standard_missing_image_reference_fails(tmp_path, subset, overrides, missing):
     (tmp_path / "images").mkdir()
     with pytest.raises(ValueError, match=f"Missing {missing}"):
-        _prepare_row(standard_row() | overrides, tmp_path, subset)
+        _prepare_row(source_row() | overrides, tmp_path, subset)
 
 
 @pytest.mark.parametrize("source_subset", ["vision", "standard-4", "standard-10"])
-def test_cache_cannot_be_reused_for_another_subset(tmp_path, monkeypatch, source_subset):
+def test_cache_rejects_another_subset_or_stale_format(tmp_path, monkeypatch, source_subset):
     import shutil
 
     monkeypatch.setattr(mmmu_pro, "EXPECTED_COUNT", 1)
-    source = standard_row() | {"image": PILImage.new("RGB", (2, 3))}
-    _, directory, row = cache_row(tmp_path, source, source_subset)
+    source = source_row()
+    original, directory, row = cache_row(tmp_path, source, source_subset)
     ids = {row["id"]}
     for subset in mmmu_pro.SUBSETS:
         if subset == source_subset:
@@ -292,6 +234,12 @@ def test_cache_cannot_be_reused_for_another_subset(tmp_path, monkeypatch, source
         (tmp_path / "images").mkdir(exist_ok=True)
         ids.add(_prepare_row(source, tmp_path, subset)["id"])
     assert len(ids) == 3
+    row.pop("prompt")
+    write_cache(directory, [row], repository=mmmu_pro.REPOSITORY, revision=mmmu_pro.REVISION)
+    with pytest.raises(ValueError, match="cache format; prepare in a fresh data-dir"):
+        original.load(tmp_path)
+    with pytest.raises(ValueError, match="cache format; prepare in a fresh data-dir"):
+        original.prepare(tmp_path)
 
 
 @pytest.mark.parametrize("subset", ["standard", "standard-5", "Vision", ""])

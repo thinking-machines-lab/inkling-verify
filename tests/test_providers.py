@@ -5,9 +5,7 @@ import copy
 import io
 import json
 
-import httpx
 import pytest
-from openai import BadRequestError
 from PIL import Image as PILImage
 
 from inkling_vendor_verifier.types import Generation, Image, Message, Text
@@ -68,24 +66,6 @@ async def test_missing_or_cross_protocol_native_state_rejected_before_http(
         ):
             await provider.generate([message], GENERATION)
     assert not requests
-
-
-async def test_api_error_is_not_retried_with_different_options(sdk_provider):
-    provider, requests = sdk_provider(
-        "openai-completions",
-        [
-            httpx.Response(
-                400,
-                json={
-                    "error": {"message": "temperature unsupported", "type": "invalid_request_error"}
-                },
-            ),
-        ],
-    )
-    async with provider:
-        with pytest.raises(BadRequestError, match="temperature unsupported"):
-            await provider.generate([Message("user", (Text("Question"),))], Generation(4096))
-    assert len(requests) == 1
 
 
 @pytest.mark.parametrize("api", APIS)

@@ -17,8 +17,8 @@ from pathlib import Path, PurePosixPath
 from inkling_vendor_verifier.types import Example, Message, Text
 
 
-def release(benchmark: str) -> dict[str, str]:
-    return json.loads(files(__package__).joinpath("task_bundles.json").read_text())[benchmark]
+def release() -> dict[str, str]:
+    return json.loads(files(__package__).joinpath("task_bundles.json").read_text())["deepswe"]
 
 
 def _download(url: str, destination: Path) -> None:
@@ -65,34 +65,34 @@ def _file_hashes(directory: Path) -> dict[str, str]:
     return hashes
 
 
-def _manifest(directory: Path, benchmark: str) -> dict:
+def _manifest(directory: Path) -> dict:
     hashes = _file_hashes(directory)
     raw = (directory / "manifest.json").read_bytes()
-    if hashlib.sha256(raw).hexdigest() != release(benchmark)["manifest_sha256"]:
+    if hashlib.sha256(raw).hexdigest() != release()["manifest_sha256"]:
         raise ValueError("Task manifest differs from the pinned release")
     manifest = json.loads(raw)
-    if manifest["benchmark"] != benchmark:
+    if manifest["benchmark"] != "deepswe":
         raise ValueError("Task bundle has the wrong benchmark")
     if manifest["files"] != hashes:
         raise ValueError("Task files have changed; prepare the bundle again")
     return manifest
 
 
-def prepare(data_dir: Path, benchmark: str) -> Path:
-    destination = data_dir / benchmark
+def prepare(data_dir: Path) -> Path:
+    destination = data_dir / "deepswe"
     if destination.exists():
         raise FileExistsError(destination)
     data_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".tasks-prepare-", dir=data_dir) as temporary:
-        pin = release(benchmark)
+        pin = release()
         bundle = Path(temporary) / "tasks.tar.gz"
-        print(f"Downloading {benchmark} task data...", flush=True)
+        print("Downloading DeepSWE task data...", flush=True)
         _download(pin["url"], bundle)
         with bundle.open("rb") as source:
             checksum = hashlib.file_digest(source, "sha256").hexdigest()
         if checksum != pin["sha256"]:
             raise ValueError("Task archive differs from the pinned release bundle")
-        staged = Path(temporary) / benchmark
+        staged = Path(temporary) / "deepswe"
         staged.mkdir()
         with tarfile.open(bundle) as archive:
             for member in archive.getmembers():
@@ -104,14 +104,14 @@ def prepare(data_dir: Path, benchmark: str) -> Path:
                 ):
                     raise ValueError(f"Unsafe task archive member: {member.name}")
             archive.extractall(staged, filter="data")
-        _manifest(staged, benchmark)
+        _manifest(staged)
         staged.rename(destination)
     return destination
 
 
-def load(data_dir: Path, benchmark: str) -> list[Example]:
-    directory = data_dir / benchmark
-    manifest = _manifest(directory, benchmark)
+def load(data_dir: Path) -> list[Example]:
+    directory = data_dir / "deepswe"
+    manifest = _manifest(directory)
     return [
         Example(
             id=row["id"],

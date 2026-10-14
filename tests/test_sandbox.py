@@ -11,7 +11,7 @@ from inkling_vendor_verifier.benchmarks.task_bundles import release
 from inkling_vendor_verifier.deepswe_images import (
     IMAGE_MANIFEST_SHA256,
     PLATFORM,
-    solver_dockerfile,
+    solver_image,
     verifier_dockerfile,
 )
 from inkling_vendor_verifier.sandbox import (
@@ -49,65 +49,35 @@ def test_deepswe_uses_binary_structured_reward(tmp_path, reward):
 @pytest.fixture
 def deepswe_task(tmp_path):
     task = tmp_path / "task"
-    (task / "environment").mkdir(parents=True)
-    (task / "environment/Dockerfile").write_text(
-        "FROM public.ecr.aws/x8v8d7g8/mars-base:latest\nWORKDIR /app\n"
-    )
     (task / "tests").mkdir(parents=True)
     (task / "tests/Dockerfile").write_text("FROM fixture:solver\nCOPY . /tests/\n")
     (task / "task.toml").write_text(
-        """schema_version = "1.3"
-artifacts = ["/logs/artifacts/model.patch"]
-[metadata]
+        """[metadata]
 base_commit_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 [environment]
 docker_image = "fixture:solver"
-os = "linux"
-gpus = 0
-mcp_servers = []
-env = {}
 cpus = 2
 memory_mb = 8192
-[agent]
-network_mode = "no-network"
-timeout_sec = 10800
 [verifier]
-network_mode = "no-network"
-environment_mode = "separate"
 timeout_sec = 1800
-env = {}
 [verifier.environment]
 cpus = 3
 memory_mb = 12288
 [[verifier.collect]]
 command = "git diff --binary abc123 HEAD > /logs/artifacts/model.patch"
 timeout_sec = 300
-[solution]
-env = {}
 """.replace('docker_image = "fixture:solver"', f'docker_image = "{UPSTREAM_IMAGE}"')
     )
     return task
 
 
-@pytest.mark.parametrize(
-    "before,after",
-    [
-        ('network_mode = "no-network"', 'network_mode = "public"'),
-        ('environment_mode = "separate"', 'environment_mode = "same"'),
-        ('os = "linux"', 'os = "windows"'),
-        ("gpus = 0", "gpus = 1"),
-        ("env = {}", 'env = {SECRET = "value"}'),
-        ("artifacts/model.patch", "artifacts/other.patch"),
-        ("mcp_servers = []", 'mcp_servers = ["service"]'),
-        ("timeout_sec = 300", "timeout_sec = -1"),
-        ("[verifier.environment]", '[verifier.environment]\nuser = "root"'),
-    ],
-)
-def test_deepswe_rejects_unsupported_execution_fields(deepswe_task, before, after):
+@pytest.mark.parametrize("memory", ["0", "-1", "true", '"8192"'])
+@pytest.mark.parametrize("original", ["8192", "12288"])
+def test_deepswe_rejects_invalid_resource_limits(deepswe_task, memory, original):
     path = deepswe_task / "task.toml"
-    path.write_text(path.read_text().replace(before, after))
-    with pytest.raises(ValueError, match="Unsupported|Invalid DeepSWE"):
-        module.task_config(deepswe_task)
+    path.write_text(path.read_text().replace(f"memory_mb = {original}", f"memory_mb = {memory}"))
+    with pytest.raises(ValueError, match="memory_mb must be a positive integer"):
+        DockerSandbox(deepswe_task, deepswe_task / "result")
 
 
 @pytest.mark.parametrize("failure", [None, "collect", "verifier-build", "patch-symlink"])
@@ -117,7 +87,8 @@ async def test_deepswe_isolates_solver_and_verifier(
 ):
     work = tmp_path / "result"
     calls = []
-    hook = module.task_config(deepswe_task)["verifier"]["collect"][0]["command"]
+    sandbox = DockerSandbox(deepswe_task, work, allow_network=allow_network)
+    hook = sandbox.config["verifier"]["collect"][0]["command"]
     patch_bytes = b"binary patch\x00\xff"
 
     async def docker(*args, **kwargs):
@@ -142,15 +113,14 @@ async def test_deepswe_isolates_solver_and_verifier(
         return CommandResult("", "", 0, 0.1)
 
     monkeypatch.setattr(module, "command", docker)
-    sandbox = DockerSandbox(deepswe_task, work, allow_network=allow_network)
     solver = sandbox.name
 
     async def evaluate():
         async with sandbox:
-            assert not any(a[1] in {"cp", "network"} for a in calls)
-            builds = [a for a in calls if a[1] == "build"]
-            assert len(builds) == 1
-            assert builds[0][-1] == str(deepswe_task / "environment")
+            assert not any(a[1] == "network" for a in calls)
+            assert not any(a[1] == "build" for a in calls)
+            assert (work / "logs/artifacts").is_dir()
+            assert ("docker", "cp", str(work / "logs"), solver + ":/") in calls
             await sandbox.run("printf x", workdir="/app")
             assert ("--workdir", "/app") == calls[-1][2:4]
             assert calls[-1][-3:] == ("bash", "-lc", "printf x")
@@ -166,11 +136,8 @@ async def test_deepswe_isolates_solver_and_verifier(
         verifier = solver + "-verifier"
         runs = [a for a in calls if a[1] == "run"]
         assert len(runs) == 2
-        assert sandbox.solver_image in runs[0]
+        assert PINNED_IMAGE in runs[0]
         assert "fixture:solver" not in runs[0]
-        assert (work / "environment.Dockerfile").read_text() == (
-            f"FROM {PINNED_IMAGE}\nRUN mkdir -p /logs/artifacts\n"
-        )
         assert (work / "tests.Dockerfile").read_text() == (
             f"FROM {sandbox.solver_image}\nCOPY . /tests/\n"
         )
@@ -181,7 +148,9 @@ async def test_deepswe_isolates_solver_and_verifier(
         assert any(a[1] == "build" and a[-1] == str(deepswe_task / "tests") for a in calls)
         copies = [a[2:] for a in calls if a[1] == "cp"]
         assert copies == [
+            (str(work / "logs"), solver + ":/"),
             (solver + ":/logs/artifacts/model.patch", str(work / "candidate.patch")),
+            (str(work / "logs"), verifier + ":/"),
             (str(work / "candidate.patch"), verifier + ":/logs/artifacts/model.patch"),
             (verifier + ":/logs/verifier", str(work / "verifier")),
         ]
@@ -235,13 +204,11 @@ def test_deepswe_rejects_unexpected_verifier_image_stages(source):
 def test_deepswe_image_pins_cover_the_release_and_have_a_resume_identity():
     raw = Path(deepswe_images.__file__).with_suffix(".json").read_bytes()
     manifest = json.loads(raw)
-    assert manifest["task_manifest_sha256"] == release("deepswe")["manifest_sha256"]
+    assert manifest["task_manifest_sha256"] == release()["manifest_sha256"]
     assert len(manifest["images"]) == 113
     assert IMAGE_MANIFEST_SHA256 == hashlib.sha256(raw).hexdigest()
     assert PLATFORM == "linux/amd64"
-    assert solver_dockerfile(UPSTREAM_IMAGE) == (
-        f"FROM {PINNED_IMAGE}\nRUN mkdir -p /logs/artifacts\n"
-    )
+    assert solver_image(UPSTREAM_IMAGE) == PINNED_IMAGE
 
 
 async def test_deepswe_rejects_unpinned_images_without_building(deepswe_task, monkeypatch):
@@ -291,47 +258,12 @@ async def test_deepswe_verifier_cache_includes_solver_image(deepswe_task, tmp_pa
 
     monkeypatch.setattr(module, "command", docker)
     sandbox = DockerSandbox(deepswe_task, tmp_path)
-    first = await sandbox._image(deepswe_task / "tests", {}, "solver:first")
-    second = await sandbox._image(deepswe_task / "tests", {}, "solver:second")
+    sandbox.solver_image = "solver:first"
+    first = await sandbox._verifier_image()
+    sandbox.solver_image = "solver:second"
+    second = await sandbox._verifier_image()
     assert first != second
     assert len(calls) == 2
-
-
-@pytest.mark.parametrize("section", ["agent", "verifier"])
-@pytest.mark.parametrize("mode", ["public", "allowlist", "host", "bridge"])
-async def test_deepswe_rejects_network_access_before_start(
-    deepswe_task, monkeypatch, section, mode
-):
-    path = deepswe_task / "task.toml"
-    source = path.read_text()
-    source = source.replace(
-        f'[{section}]\nnetwork_mode = "no-network"',
-        f'[{section}]\nnetwork_mode = "{mode}"',
-    )
-    path.write_text(source)
-
-    async def unexpected_docker(*args, **kwargs):
-        pytest.fail("An invalid task must not reach the container engine")
-
-    monkeypatch.setattr(module, "command", unexpected_docker)
-    with pytest.raises(ValueError, match="Unsupported DeepSWE execution"):
-        async with DockerSandbox(deepswe_task, deepswe_task / "result"):
-            pytest.fail("unexpected network-enabled sandbox")
-
-
-@pytest.mark.parametrize("section", ["agent", "verifier", "environment"])
-def test_deepswe_rejects_allowlists(deepswe_task, section):
-    path = deepswe_task / "task.toml"
-    path.write_text(path.read_text().replace(f"[{section}]", f"[{section}]\nallowed_hosts = []"))
-    with pytest.raises(ValueError, match="Unsupported .* fields"):
-        module.task_config(deepswe_task)
-
-
-def test_deepswe_rejects_legacy_task_schema(deepswe_task):
-    path = deepswe_task / "task.toml"
-    path.write_text(path.read_text().replace('schema_version = "1.3"', 'version = "1.0"'))
-    with pytest.raises(ValueError, match="Unsupported DeepSWE task schema"):
-        module.task_config(deepswe_task)
 
 
 async def test_command_bounds_output_while_draining_both_pipes():
@@ -349,17 +281,3 @@ async def test_command_bounds_output_while_draining_both_pipes():
 async def test_command_timeout_terminates_local_client():
     with pytest.raises(TimeoutError):
         await command(sys.executable, "-c", "import time; time.sleep(60)", timeout=0.05)
-
-
-async def test_failed_build_cannot_leak_a_running_container(deepswe_task, tmp_path, monkeypatch):
-    calls = []
-
-    async def docker(*args, **kwargs):
-        calls.append(args)
-        return CommandResult("", "build failed", 1, 0)
-
-    monkeypatch.setattr(module, "command", docker)
-    with pytest.raises(RuntimeError, match="build failed"):
-        async with DockerSandbox(deepswe_task, tmp_path / "result"):
-            pytest.fail("unexpected successful build")
-    assert len(calls) == 1

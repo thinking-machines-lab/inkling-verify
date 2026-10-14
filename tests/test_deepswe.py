@@ -2,9 +2,8 @@ import asyncio
 
 import pytest
 
-from inkling_vendor_verifier import code_agent
+from inkling_vendor_verifier.benchmarks import deepswe
 from inkling_vendor_verifier.benchmarks.deepswe import DeepSWE
-from inkling_vendor_verifier.sandbox import CommandResult
 from inkling_vendor_verifier.types import (
     Example,
     Generation,
@@ -14,28 +13,6 @@ from inkling_vendor_verifier.types import (
     ToolCall,
     Usage,
 )
-
-
-class Sandbox:
-    config = {"agent": {"network_mode": "no-network"}, "verifier": {"network_mode": "no-network"}}
-
-    def __init__(self, *args):
-        self.commands = []
-        self.graded = False
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        pass
-
-    async def run(self, command, **kwargs):
-        self.commands.append(command)
-        return CommandResult("ok", "", 0, 0.01)
-
-    async def grade(self):
-        self.graded = True
-        return 1, {"verifier_exit_code": 0}
 
 
 def reply(text="", calls=(), tokens=4, stop="stop"):
@@ -55,21 +32,14 @@ class Provider:
 
 
 @pytest.fixture
-def task(monkeypatch):
-    sandbox = Sandbox()
-
-    def create(*args, allow_network):
-        sandbox.allow_network = allow_network
-        return sandbox
-
-    monkeypatch.setattr(code_agent, "DockerSandbox", create)
+def task(code_sandbox):
     example = Example(
         "task",
         (Message("user", (Text("fix the bug"),)),),
         "",
         {"task_dir": "/task", "suite": "deepswe"},
     )
-    return example, sandbox
+    return example, code_sandbox
 
 
 @pytest.mark.parametrize(
@@ -87,8 +57,8 @@ async def test_limits_still_grade_committed_patch(
     task, tmp_path, monkeypatch, limit, tool_count, executed
 ):
     example, sandbox = task
-    monkeypatch.setattr(code_agent, "MAX_TURNS", 1 if limit == "max_turns" else 2)
-    monkeypatch.setattr(code_agent, "MAX_TOOL_CALLS", 1 if limit == "max_tool_calls" else 2)
+    monkeypatch.setattr(deepswe, "MAX_TURNS", 1 if limit == "max_turns" else 2)
+    monkeypatch.setattr(deepswe, "MAX_TOOL_CALLS", 1 if limit == "max_tool_calls" else 2)
     provider = Provider(
         [
             reply(
@@ -103,7 +73,7 @@ async def test_limits_still_grade_committed_patch(
         ]
     )
     if limit == "timeout":
-        monkeypatch.setattr(code_agent, "AGENT_TIMEOUT_SECONDS", 0)
+        monkeypatch.setattr(deepswe, "AGENT_TIMEOUT_SECONDS", 0)
         generate = provider.generate
 
         async def wait_for_deadline(*args, **kwargs):
@@ -118,7 +88,7 @@ async def test_limits_still_grade_committed_patch(
     assert result.details["stop_reason"] == ("max_tokens" if limit == "length" else limit)
     assert result.details["turns"] == len(provider.calls) == 1
     assert result.details["tool_calls"] == executed
-    assert sandbox.commands == ["echo ok"] * executed
+    assert sandbox.commands == [("echo ok", None, 300)] * executed
     assert sandbox.graded
 
 
