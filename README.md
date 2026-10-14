@@ -86,3 +86,24 @@ python -m inkling_verify.benchmarks.niah run \
   --api openai-completions --model MODEL --base-url https://API_HOST/v1 \
   --output results/niah
 ```
+
+## Tinker
+
+Set `TINKER_API_KEY`, then use Tinker's [Chat Completions](https://tinker-docs.thinkingmachines.ai/tinker/compatible-apis/openai/)
+or [Anthropic Messages](https://tinker-docs.thinkingmachines.ai/tinker/compatible-apis/anthropic/)
+endpoint. After preparing the dataset, for example:
+
+```bash
+python -m inkling_verify.benchmarks.mmmu_pro run --subset vision --with-tools \
+  --api openai-completions --model thinkingmachines/Inkling \
+  --base-url https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1 \
+  --api-key-env TINKER_API_KEY --output results/tinker-openai
+
+python -m inkling_verify.benchmarks.mmmu_pro run --subset vision --with-tools \
+  --api anthropic --model thinkingmachines/Inkling \
+  --base-url https://tinker.thinkingmachines.dev/services/tinker-prod/anthropic/api \
+  --api-key-env TINKER_API_KEY --output results/tinker-anthropic
+```
+
+Replace `thinkingmachines/Inkling` with another base model or a
+`tinker://YOUR_RUN/sampler_weights/YOUR_CHECKPOINT` path.
