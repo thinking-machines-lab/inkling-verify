@@ -8,7 +8,7 @@ import pytest
 
 from inkling_vendor_verifier import cli
 from inkling_vendor_verifier.benchmarks import deepswe, niah
-from inkling_vendor_verifier.benchmarks import hle as hle
+from inkling_vendor_verifier.benchmarks import hle_no_tools as hle
 from inkling_vendor_verifier.benchmarks import mmmu_pro as mmmu
 from inkling_vendor_verifier.benchmarks import swe_bench as swe
 from inkling_vendor_verifier.types import Example, Generation
@@ -363,7 +363,7 @@ def test_hle_cli_resolves_judge_independently(
         sys,
         "argv",
         [
-            "hle.py",
+            "hle_no_tools.py",
             "run",
             "--api",
             candidate_api,
@@ -400,7 +400,7 @@ def test_hle_cli_rejects_invalid_judge_top_p(monkeypatch, top_p):
         sys,
         "argv",
         [
-            "hle.py",
+            "hle_no_tools.py",
             "run",
             "--api",
             "anthropic",

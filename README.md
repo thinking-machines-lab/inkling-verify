@@ -9,7 +9,7 @@ APIs; each API adapter serves every benchmark.
 | `swe_bench.py` | Signal (250), Verified (500), Pro v1 (731), Multilingual (300) | Executable tests after native bash tool calls |
 | `deepswe.py` | DeepSWE v1.1 (113) | Committed patch tested in a fresh offline container |
 | `mmmu_pro.py` | Vision, Standard-4, Standard-10 (1,730 each) | Local multiple-choice answer extraction |
-| `hle.py` | Text-only HLE (2,158) | Structured judgment by the candidate or a separate judge |
+| `hle_no_tools.py` | Text-only HLE without tools (2,158) | Structured judgment by the candidate or a separate judge |
 | `niah.py` | 5 context lengths × 11 depths × 10 samples | UUID retrieval from the visible answer |
 
 Defaults are SWE Signal, MMMU-Pro Vision, and HLE self-judging. HLE self-judging
@@ -32,8 +32,8 @@ python swe_bench.py --help
 
 Each script has `prepare` and `run` subcommands and works directly from the
 checkout. Alternatively, `python -m pip install -e .` installs the equivalent
-`swe-bench`, `deepswe`, `mmmu-pro`, `hle`, and `niah` commands. Both installation
-methods use `requirements.txt`; uv is not required.
+`swe-bench`, `deepswe`, `mmmu-pro`, `hle-no-tools`, and `niah` commands. Both
+installation methods use `requirements.txt`; uv is not required.
 
 ## Prepare data
 
@@ -52,7 +52,7 @@ python mmmu_pro.py prepare --subset vision
 
 # Accept the cais/hle dataset terms and authenticate on Hugging Face first.
 export HF_TOKEN=...
-python hle.py prepare
+python hle_no_tools.py prepare
 python niah.py prepare --tokenizer MODEL_OR_DIRECTORY
 ```
 
@@ -145,7 +145,7 @@ candidate sampling omissions also apply to the default self-judge.
 
 ```bash
 export JUDGE_API_KEY=...
-python hle.py run --api openai-completions --model CANDIDATE \
+python hle_no_tools.py run --api openai-completions --model CANDIDATE \
   --base-url https://CANDIDATE_VENDOR/v1 --output results/hle \
   --judge-api anthropic --judge-model JUDGE \
   --judge-base-url https://JUDGE_VENDOR --judge-api-key-env JUDGE_API_KEY

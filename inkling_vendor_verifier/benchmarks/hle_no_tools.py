@@ -1,4 +1,4 @@
-"""Text-only Humanity's Last Exam with self-judging or an independent judge."""
+"""Text-only Humanity's Last Exam without tools, with self-judging or a separate judge."""
 
 from __future__ import annotations
 
@@ -238,7 +238,7 @@ def judge_settings(args: argparse.Namespace) -> tuple[argparse.Namespace | None,
 
 
 def main() -> None:
-    root, _, run_parser = parser(HLE.name)
+    root, _, run_parser = parser("HLE without tools")
     run_parser.set_defaults(reasoning_effort="max")
     add_api_arguments(run_parser, prefix="judge-")
     run_parser.add_argument("--judge-max-output-tokens", type=positive, default=32768)

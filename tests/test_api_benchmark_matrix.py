@@ -12,7 +12,7 @@ import pytest
 from PIL import Image
 
 from inkling_vendor_verifier import code_agent
-from inkling_vendor_verifier.benchmarks import hle as hle
+from inkling_vendor_verifier.benchmarks import hle_no_tools as hle
 from inkling_vendor_verifier.benchmarks import mmmu_pro as mmmu
 from inkling_vendor_verifier.benchmarks import niah
 from inkling_vendor_verifier.benchmarks import swe_bench as swe
