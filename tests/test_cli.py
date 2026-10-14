@@ -10,7 +10,6 @@ from inkling_vendor_verifier import cli
 from inkling_vendor_verifier.benchmarks import deepswe, niah
 from inkling_vendor_verifier.benchmarks import hle_no_tools as hle
 from inkling_vendor_verifier.benchmarks import mmmu_pro as mmmu
-from inkling_vendor_verifier.benchmarks import swe_bench as swe
 from inkling_vendor_verifier.types import Example, Generation
 
 BENCHMARKS = (
@@ -19,10 +18,6 @@ BENCHMARKS = (
     (mmmu, mmmu.MMMUPro, None),
     (mmmu, mmmu.MMMUPro, "standard-4"),
     (mmmu, mmmu.MMMUPro, "standard-10"),
-    (swe, swe.SWEBench, None),
-    (swe, swe.SWEBench, "verified"),
-    (swe, swe.SWEBench, "pro"),
-    (swe, swe.SWEBench, "multilingual"),
     (deepswe, deepswe.DeepSWE, None),
 )
 
@@ -85,6 +80,8 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
         if module is hle:
             assert args.reasoning_effort == "max"
             assert args.max_output_tokens == 262144
+        if module is deepswe:
+            assert benchmark.allow_network is False
         if module is niah:
             assert (
                 args.max_output_tokens,
@@ -95,27 +92,12 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
             ) == (128, 0, None, "none", 4)
 
 
-@pytest.mark.parametrize(
-    "module,arguments,message",
-    [
-        (swe, ["--bundle", "tasks.tar.gz"], "unrecognized arguments: --bundle"),
-        (deepswe, ["--bundle", "tasks.tar.gz"], "unrecognized arguments: --bundle"),
-        (hle, ["--bundle", "tasks.tar.gz"], "unrecognized arguments: --bundle"),
-        (mmmu, ["--bundle", "tasks.tar.gz"], "unrecognized arguments: --bundle"),
-        (
-            deepswe,
-            ["--subset", "deepswe"],
-            "unrecognized arguments: --subset",
-        ),
-        (swe, ["--subset", "deepswe"], "invalid choice: 'deepswe'"),
-    ],
-)
-def test_prepare_arguments_match_benchmark(monkeypatch, capsys, module, arguments, message):
-    monkeypatch.setattr(sys, "argv", ["benchmark.py", "prepare", *arguments])
+def test_deepswe_prepare_rejects_subsets(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["deepswe.py", "prepare", "--subset", "deepswe"])
     with pytest.raises(SystemExit) as error:
-        module.main()
+        deepswe.main()
     assert error.value.code == 2
-    assert message in capsys.readouterr().err
+    assert "unrecognized arguments: --subset" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -225,8 +207,8 @@ def evaluation(monkeypatch, tmp_path):
     [
         (hle.HLE(), 64, 131072),
         (mmmu.MMMUPro(), 64, 131072),
-        (swe.SWEBench(), 32, 262144),
         (deepswe.DeepSWE(), 32, 262144),
+        (deepswe.DeepSWE(allow_network=True), 32, 262144),
     ],
 )
 async def test_cli_records_dataset_and_endpoint_without_secrets_and_marks_smoke(
@@ -266,12 +248,46 @@ async def test_cli_records_dataset_and_endpoint_without_secrets_and_marks_smoke(
     assert configuration["base_url"] == "http://local.example/v1"
     assert "secret" not in json.dumps(configuration)
     assert kwargs["concurrency"] == concurrency
+    if isinstance(benchmark, deepswe.DeepSWE) and benchmark.allow_network:
+        assert configuration["allow_network"] is True
+    else:
+        assert "allow_network" not in configuration
     assert captured["closed"] == ["candidate"]
     args.concurrency, args.max_output_tokens = 2, 123
     await cli.evaluate(benchmark, args)
     _, _, generation, _, kwargs = captured["run"]
     assert kwargs["concurrency"] == 2
     assert generation.max_tokens == 123
+
+
+@pytest.mark.parametrize("module", [deepswe, hle, mmmu, niah])
+def test_only_deepswe_accepts_allow_network(monkeypatch, module):
+    async def evaluate(benchmark, args):
+        assert isinstance(benchmark, deepswe.DeepSWE)
+        assert benchmark.allow_network is True
+
+    monkeypatch.setattr(module, "evaluate", evaluate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark.py",
+            "run",
+            "--api",
+            "anthropic",
+            "--model",
+            "candidate",
+            "--output",
+            "results",
+            "--allow-network",
+        ],
+    )
+    if module is deepswe:
+        module.main()
+    else:
+        with pytest.raises(SystemExit) as error:
+            module.main()
+        assert error.value.code == 2
 
 
 async def test_missing_api_key_fails_before_provider_creation(monkeypatch, evaluation):

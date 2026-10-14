@@ -1,4 +1,4 @@
-"""Shared bash agent loop for executable coding benchmarks."""
+"""Bash agent loop for DeepSWE across serving APIs."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 from dataclasses import asdict, replace
 from pathlib import Path
 
-from inkling_vendor_verifier.sandbox import DockerSandbox, phase_hosts
+from inkling_vendor_verifier.sandbox import DockerSandbox
 from inkling_vendor_verifier.types import (
     Evaluation,
     Example,
@@ -22,21 +22,14 @@ MAX_TURNS = 4096
 MAX_TOOL_CALLS = 4096
 
 
-def bash_tool(hosts: list[str]) -> Tool:
-    description = (
-        "Executes a bash command in the SandboxInterface. Returns stdout, stderr "
-        "(truncated to 16KB each), exit code, and execution time."
-    )
-    if not hosts:
-        description += "\n\nCommands run with this tool have no internet access."
-    elif hosts != ["*"]:
-        description += (
-            "\n\nCommands run with this tool can only reach a restricted set of allowlisted "
-            "internet hosts."
-        )
+def bash_tool(*, allow_network: bool = False) -> Tool:
     return Tool(
         name="bash",
-        description=description,
+        description=(
+            "Executes a bash command in the SandboxInterface. Returns stdout, stderr "
+            "(truncated to 16KB each), exit code, and execution time."
+            + ("" if allow_network else "\n\nCommands run with this tool have no internet access.")
+        ),
         parameters={
             "type": "object",
             "properties": {
@@ -53,7 +46,8 @@ def bash_tool(hosts: list[str]) -> Tool:
 
 
 class CodeBenchmark:
-    zero_reward_on_limit = True
+    def __init__(self, *, allow_network: bool = False):
+        self.allow_network = allow_network
 
     async def evaluate(
         self,
@@ -70,8 +64,10 @@ class CodeBenchmark:
         turns = 0
         stop = "max_turns"
         answer = ""
-        async with DockerSandbox(Path(example.metadata["task_dir"]), work_dir) as sandbox:
-            tool = bash_tool(phase_hosts(sandbox.config, "agent"))
+        async with DockerSandbox(
+            Path(example.metadata["task_dir"]), work_dir, allow_network=self.allow_network
+        ) as sandbox:
+            tool = bash_tool(allow_network=self.allow_network)
             deadline = asyncio.timeout(
                 float(sandbox.config.get("agent", {}).get("timeout_sec", 28800))
             )
@@ -83,7 +79,7 @@ class CodeBenchmark:
                         )
                         if response.usage.output_tokens <= 0:
                             raise RuntimeError(
-                                "SWE generation requires positive reported output token usage"
+                                "DeepSWE generation requires positive reported output token usage"
                             )
                         remaining -= response.usage.output_tokens
                         messages.append(response.message)
@@ -139,10 +135,7 @@ class CodeBenchmark:
                 stop = "timeout"
             reward, grade = await sandbox.grade()
             return Evaluation(
-                score=0.0
-                if self.zero_reward_on_limit
-                and stop in {"max_tokens", "max_turns", "max_tool_calls", "timeout"}
-                else reward,
+                score=reward,
                 answer=answer,
                 details={
                     "suite": example.metadata["suite"],
@@ -152,8 +145,9 @@ class CodeBenchmark:
                     "generated_tokens": generation.max_tokens - remaining,
                     "token_budget_kind": "cumulative_generated_tokens",
                     "verifier_reward": reward,
-                    "solve_allowed_hosts": phase_hosts(sandbox.config, "agent"),
-                    "verifier_allowed_hosts": phase_hosts(sandbox.config, "verifier"),
+                    "allow_network": self.allow_network,
+                    "solve_allowed_hosts": ["*"] if self.allow_network else [],
+                    "verifier_allowed_hosts": ["*"] if self.allow_network else [],
                     **grade,
                 },
             )

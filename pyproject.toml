@@ -13,7 +13,6 @@ dynamic = ["dependencies"]
 dev = ["pytest>=8", "pytest-asyncio>=1", "ruff>=0.12"]
 
 [project.scripts]
-swe-bench = "inkling_vendor_verifier.benchmarks.swe_bench:main"
 deepswe = "inkling_vendor_verifier.benchmarks.deepswe:main"
 mmmu-pro = "inkling_vendor_verifier.benchmarks.mmmu_pro:main"
 hle-no-tools = "inkling_vendor_verifier.benchmarks.hle_no_tools:main"

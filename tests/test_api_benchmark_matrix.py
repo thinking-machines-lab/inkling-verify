@@ -15,7 +15,6 @@ from inkling_vendor_verifier import code_agent
 from inkling_vendor_verifier.benchmarks import hle_no_tools as hle
 from inkling_vendor_verifier.benchmarks import mmmu_pro as mmmu
 from inkling_vendor_verifier.benchmarks import niah
-from inkling_vendor_verifier.benchmarks import swe_bench as swe
 from inkling_vendor_verifier.benchmarks.deepswe import DeepSWE
 from inkling_vendor_verifier.runner import run
 from inkling_vendor_verifier.sandbox import CommandResult
@@ -316,14 +315,12 @@ class Sandbox:
 
 
 @pytest.mark.parametrize("api", APIS)
-@pytest.mark.parametrize(
-    "benchmark, tool_text", [(swe.SWEBench(), "I will inspect the repository."), (DeepSWE(), None)]
-)
-async def test_swe_native_tool_loop_and_grading(
-    monkeypatch, sdk_provider, reply, tmp_path, api, benchmark, tool_text
+@pytest.mark.parametrize("tool_text", ["I will inspect the repository.", None])
+async def test_deepswe_native_tool_loop_and_grading(
+    monkeypatch, sdk_provider, reply, tmp_path, api, tool_text
 ):
     sandbox = Sandbox()
-    monkeypatch.setattr(code_agent, "DockerSandbox", lambda *args: sandbox)
+    monkeypatch.setattr(code_agent, "DockerSandbox", lambda *args, **kwargs: sandbox)
     first_response = reply(api, tool_text, tools=("pwd", "printf fixed"))
     provider, requests = sdk_provider(
         api,
@@ -338,11 +335,11 @@ async def test_swe_native_tool_loop_and_grading(
         "",
         {
             "task_dir": str(tmp_path),
-            "suite": "verified",
+            "suite": "deepswe",
         },
     )
     async with provider:
-        result = await benchmark.evaluate(example, provider, GENERATION, tmp_path)
+        result = await DeepSWE().evaluate(example, provider, GENERATION, tmp_path)
     assert result.score == 1 and result.answer == "Fixed."
     assert result.details["turns"] == 2 and result.details["tool_calls"] == 2
     assert result.details["generated_tokens"] == 10
@@ -350,7 +347,7 @@ async def test_swe_native_tool_loop_and_grading(
     assert sandbox.graded
     bodies = [json.loads(request.content) for request in requests]
     assert len(bodies) == 2
-    expected_tool = code_agent.bash_tool([])
+    expected_tool = code_agent.bash_tool()
     for body in bodies:
         tool = body["tools"][0]
         if api == "openai-completions":

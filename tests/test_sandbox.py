@@ -1,35 +1,26 @@
+import io
 import json
-import socket
+import os
+import subprocess
 import sys
-import threading
-from http.client import HTTPConnection
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import tarfile
 
 import pytest
 
-from inkling_vendor_verifier import _proxy
 from inkling_vendor_verifier import sandbox as module
+from inkling_vendor_verifier.deepswe_images import BASE_IMAGE, dockerfile
 from inkling_vendor_verifier.sandbox import (
     CommandResult,
     DockerSandbox,
     command,
     parse_reward,
-    phase_hosts,
 )
 
 
-@pytest.mark.parametrize("content", ["nan", "inf", "-1", "1.1", "not a score"])
-def test_invalid_rewards_fail(tmp_path, content):
-    (tmp_path / "reward.txt").write_text(content)
-    with pytest.raises(ValueError):
-        parse_reward(tmp_path)
-
-
 def test_zero_is_valid_and_missing_is_failure(tmp_path):
-    (tmp_path / "reward.json").write_text('{"reward": 0}')
-    with pytest.raises(RuntimeError, match="did not produce"):
+    with pytest.raises(RuntimeError, match="did not produce reward.json"):
         parse_reward(tmp_path)
-    (tmp_path / "reward.txt").write_text("0")
+    (tmp_path / "reward.json").write_text('{"reward": 0}')
     assert parse_reward(tmp_path) == 0
 
 
@@ -37,21 +28,25 @@ def test_zero_is_valid_and_missing_is_failure(tmp_path):
 def test_deepswe_uses_binary_structured_reward(tmp_path, reward):
     (tmp_path / "reward.json").write_text(json.dumps({"reward": reward, "f2p_passed": 3}))
     if type(reward) is int and reward in (0, 1):
-        assert parse_reward(tmp_path, structured=True) == reward
+        assert parse_reward(tmp_path) == reward
     else:
         with pytest.raises(ValueError, match="binary reward"):
-            parse_reward(tmp_path, structured=True)
+            parse_reward(tmp_path)
 
 
 def test_deepswe_crash_sentinel_is_an_infrastructure_failure(tmp_path):
     (tmp_path / "reward.txt").write_text("-1")
     with pytest.raises(RuntimeError, match="did not produce reward.json"):
-        parse_reward(tmp_path, structured=True)
+        parse_reward(tmp_path)
 
 
 @pytest.fixture
 def deepswe_task(tmp_path):
     task = tmp_path / "task"
+    (task / "environment").mkdir(parents=True)
+    (task / "environment/Dockerfile").write_text(
+        "FROM public.ecr.aws/x8v8d7g8/mars-base:latest\nWORKDIR /app\n"
+    )
     (task / "tests").mkdir(parents=True)
     (task / "tests/Dockerfile").write_text("FROM fixture:solver\nCOPY . /tests/\n")
     (task / "task.toml").write_text(
@@ -108,7 +103,10 @@ def test_deepswe_rejects_unsupported_execution_fields(deepswe_task, before, afte
 
 
 @pytest.mark.parametrize("failure", [None, "collect", "verifier-build", "patch-symlink"])
-async def test_deepswe_isolates_solver_and_verifier(deepswe_task, tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize("allow_network", [False, True])
+async def test_deepswe_isolates_solver_and_verifier(
+    deepswe_task, tmp_path, monkeypatch, failure, allow_network
+):
     work = tmp_path / "result"
     calls = []
     hook = module.task_config(deepswe_task)["verifier"]["collect"][0]["command"]
@@ -119,7 +117,9 @@ async def test_deepswe_isolates_solver_and_verifier(deepswe_task, tmp_path, monk
         if args[-1] == "git rev-parse HEAD":
             return CommandResult("a" * 40, "", 0, 0.1)
         if (failure == "collect" and args[-1] == hook) or (
-            failure == "verifier-build" and args[1] == "build"
+            failure == "verifier-build"
+            and args[1] == "build"
+            and args[-1] == str(deepswe_task / "tests")
         ):
             return CommandResult("", "injected failure", 1, 0.1)
         if args[1] == "cp" and args[2].endswith(":/logs/artifacts/model.patch"):
@@ -134,12 +134,17 @@ async def test_deepswe_isolates_solver_and_verifier(deepswe_task, tmp_path, monk
         return CommandResult("", "", 0, 0.1)
 
     monkeypatch.setattr(module, "command", docker)
-    sandbox = DockerSandbox(deepswe_task, work)
+    sandbox = DockerSandbox(deepswe_task, work, allow_network=allow_network)
     solver = sandbox.name
 
     async def evaluate():
         async with sandbox:
-            assert not any(a[1] in {"build", "cp", "network"} for a in calls)
+            assert not any(a[1] in {"cp", "network"} for a in calls)
+            builds = [a for a in calls if a[1] == "build"]
+            assert len(builds) == 1
+            assert builds[0][-1] == str(deepswe_task / "environment")
+            await sandbox.run("printf x", workdir="/app")
+            assert ("--workdir", "/app") == calls[-1][2:4]
             result = await sandbox.grade()
             assert result[0] == 1
 
@@ -152,7 +157,13 @@ async def test_deepswe_isolates_solver_and_verifier(deepswe_task, tmp_path, monk
         verifier = solver + "-verifier"
         runs = [a for a in calls if a[1] == "run"]
         assert len(runs) == 2
-        assert "fixture:solver" in runs[0]
+        assert sandbox.solver_image in runs[0]
+        assert "fixture:solver" not in runs[0]
+        assert (work / "environment.Dockerfile").read_text().startswith(f"FROM {BASE_IMAGE}\n")
+        assert (work / "tests.Dockerfile").read_text() == (
+            f"FROM {sandbox.solver_image}\nCOPY . /tests/\n"
+        )
+        assert (deepswe_task / "tests/Dockerfile").read_text().startswith("FROM fixture:solver\n")
         assert "--cpus=3" in runs[1] and "--memory=12288m" in runs[1]
         remove = calls.index(("docker", "rm", "--force", solver))
         assert remove < calls.index(runs[1])
@@ -166,101 +177,120 @@ async def test_deepswe_isolates_solver_and_verifier(deepswe_task, tmp_path, monk
     assert any(a[-1] == hook for a in calls)
     assert not any(a[1] == "network" or any("PROXY=" in flag for flag in a) for a in calls)
     for args in (a for a in calls if a[1] == "run"):
-        assert args[args.index("--network") + 1] == "none"
+        assert args[args.index("--network") + 1] == ("bridge" if allow_network else "none")
         assert "--cap-drop=ALL" in args and "--security-opt=no-new-privileges" in args
         assert "CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never" in args
         assert "TERM=xterm-256color" in args
+        assert not any(flag.startswith(("--mount", "--volume", "--privileged")) for flag in args)
         name = args[args.index("--name") + 1]
         assert ("docker", "rm", "--force", name) in calls
     assert not sandbox._created
 
 
-@pytest.mark.parametrize(
-    "config",
-    [
-        '[environment]\nenv = {FOO = "bar"}',
-        '[environment]\nworkdir = "/repo"',
-        '[agent]\nuser = "root"',
-        '[verifier]\nenv = {FOO = "bar"}',
-        '[agent]\nnetwork_mode = "allowlist"\nallowed_hosts = ["*.example.com"]',
-    ],
-)
-def test_unsupported_task_configuration_fails(tmp_path, config):
-    (tmp_path / "task.toml").write_text(config)
-    with pytest.raises(ValueError, match="Unsupported|Invalid allowlist"):
-        module.task_config(tmp_path)
+@pytest.mark.parametrize("solver_image", [None, "inkling-verifier-task:123"])
+def test_deepswe_rejects_unexpected_image_stages(solver_image):
+    with pytest.raises(ValueError, match="one DeepSWE Dockerfile stage"):
+        dockerfile(
+            "FROM public.ecr.aws/x8v8d7g8/mars-base:latest\nFROM another:image\n", solver_image
+        )
+    with pytest.raises(ValueError, match="Unexpected DeepSWE base image"):
+        dockerfile("FROM changed:upstream\n")
 
 
-def test_phase_policy_replaces_environment_policy():
-    config = {
-        "environment": {"network_mode": "allowlist", "allowed_hosts": ["example.com"]},
-        "agent": {"network_mode": "no-network"},
-        "verifier": {"network_mode": "public"},
-    }
-    assert phase_hosts(config, "agent") == []
-    assert phase_hosts(config, "verifier") == ["*"]
-    del config["agent"]["network_mode"]
-    with pytest.raises(KeyError, match="network_mode"):
-        phase_hosts(config, "agent")
-
-
-def test_proxy_matches_domains_and_rejects_private_destinations(monkeypatch):
-    assert _proxy.permitted_host("EXAMPLE.com.", ["example.com"])
-    assert _proxy.permitted_host("packages.example.com", ["*"])
-    assert not _proxy.permitted_host("example.com.attacker.com", ["example.com"])
-    monkeypatch.setattr(
-        socket,
-        "getaddrinfo",
-        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 443))],
+@pytest.mark.parametrize("architecture", ["aarch64", "x86_64"])
+def test_deepswe_native_nextest_download_and_extraction(tmp_path, architecture):
+    archive = tmp_path / "nextest.tar.gz"
+    with tarfile.open(archive, "w:gz") as output:
+        member = tarfile.TarInfo("cargo-nextest")
+        member.size, member.uid, member.gid = 7, 1001, 128
+        output.addfile(member, io.BytesIO(b"nextest"))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, script in {
+        "uname": f"printf '%s\\n' {architecture}",
+        "curl": 'printf \'%s\' "$2" > "$REQUEST_LOG"; cat "$TEST_ARCHIVE"',
+    }.items():
+        path = bin_dir / name
+        path.write_text("#!/bin/sh\n" + script + "\n")
+        path.chmod(0o755)
+    recipe = dockerfile(
+        "FROM public.ecr.aws/x8v8d7g8/mars-base:latest\n"
+        'RUN curl -LsSf "https://get.nexte.st/${NEXTEST_VERSION}/linux"'
+        " | tar zxf - -C .\n"
     )
-    with pytest.raises(PermissionError, match="public"):
-        _proxy.connect("example.com", 443, ["example.com"])
-    with pytest.raises(PermissionError, match="not allowed"):
-        _proxy.connect("elsewhere.com", 443, ["example.com"])
+    script = next(
+        line.removeprefix("RUN ") for line in recipe.splitlines() if line.startswith("RUN ")
+    )
+    subprocess.run(
+        ["sh", "-ec", script],
+        cwd=tmp_path,
+        env=os.environ
+        | {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "NEXTEST_VERSION": "0.9.97",
+            "REQUEST_LOG": str(tmp_path / "url"),
+            "TEST_ARCHIVE": str(archive),
+        },
+        check=True,
+    )
+    assert (tmp_path / "url").read_text() == (
+        "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.97/"
+        f"cargo-nextest-0.9.97-{architecture}-unknown-linux-gnu.tar.gz"
+    )
+    assert (tmp_path / "cargo-nextest").read_bytes() == b"nextest"
+    assert (tmp_path / "cargo-nextest").stat().st_uid == os.getuid()
 
 
-def test_proxy_forwards_allowed_http_and_blocks_other_hosts(tmp_path, monkeypatch):
-    class Origin(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(self.path.encode())
+async def test_deepswe_verifier_cache_includes_solver_image(deepswe_task, tmp_path, monkeypatch):
+    calls = []
 
-    origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
-    origin_thread = threading.Thread(target=origin.serve_forever, daemon=True)
-    origin_thread.start()
+    async def docker(*args, **kwargs):
+        calls.append(args)
+        return CommandResult("", "", 0, 0.1)
 
-    def local_connect(host, port, hosts):
-        if not _proxy.permitted_host(host, hosts):
-            raise PermissionError("Destination is not allowed")
-        return socket.create_connection(origin.server_address)
+    monkeypatch.setattr(module, "command", docker)
+    sandbox = DockerSandbox(deepswe_task, tmp_path)
+    first = await sandbox._image(deepswe_task / "tests", {}, "solver:first")
+    second = await sandbox._image(deepswe_task / "tests", {}, "solver:second")
+    assert first != second
+    assert len(calls) == 2
 
-    monkeypatch.setattr(_proxy, "connect", local_connect)
-    policy = tmp_path / "hosts.json"
-    policy.write_text('["allowed.example"]')
-    monkeypatch.setattr(_proxy.Proxy, "policy_file", policy, raising=False)
-    proxy = ThreadingHTTPServer(("127.0.0.1", 0), _proxy.Proxy)
-    proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
-    proxy_thread.start()
-    try:
-        client = HTTPConnection(*proxy.server_address, timeout=5)
-        client.request("GET", "http://allowed.example/path?q=1")
-        response = client.getresponse()
-        assert response.status == 200 and response.read() == b"/path?q=1"
-        client.close()
-        client = HTTPConnection(*proxy.server_address, timeout=5)
-        client.request("GET", "http://blocked.example/path")
-        response = client.getresponse()
-        assert response.status == 403
-        response.read()
-        client.close()
-    finally:
-        proxy.shutdown()
-        origin.shutdown()
-        proxy.server_close()
-        origin.server_close()
-        proxy_thread.join()
-        origin_thread.join()
+
+@pytest.mark.parametrize("section", ["agent", "verifier"])
+@pytest.mark.parametrize("mode", ["public", "allowlist", "host", "bridge"])
+async def test_deepswe_rejects_network_access_before_start(
+    deepswe_task, monkeypatch, section, mode
+):
+    path = deepswe_task / "task.toml"
+    source = path.read_text()
+    source = source.replace(
+        f'[{section}]\nnetwork_mode = "no-network"',
+        f'[{section}]\nnetwork_mode = "{mode}"',
+    )
+    path.write_text(source)
+
+    async def unexpected_docker(*args, **kwargs):
+        pytest.fail("An invalid task must not reach the container engine")
+
+    monkeypatch.setattr(module, "command", unexpected_docker)
+    with pytest.raises(ValueError, match="Unsupported DeepSWE execution"):
+        async with DockerSandbox(deepswe_task, deepswe_task / "result"):
+            pytest.fail("unexpected network-enabled sandbox")
+
+
+@pytest.mark.parametrize("section", ["agent", "verifier", "environment"])
+def test_deepswe_rejects_allowlists(deepswe_task, section):
+    path = deepswe_task / "task.toml"
+    path.write_text(path.read_text().replace(f"[{section}]", f"[{section}]\nallowed_hosts = []"))
+    with pytest.raises(ValueError, match="Unsupported .* fields"):
+        module.task_config(deepswe_task)
+
+
+def test_deepswe_rejects_legacy_task_schema(deepswe_task):
+    path = deepswe_task / "task.toml"
+    path.write_text(path.read_text().replace('schema_version = "1.3"', 'version = "1.0"'))
+    with pytest.raises(ValueError, match="Unsupported DeepSWE task schema"):
+        module.task_config(deepswe_task)
 
 
 async def test_command_bounds_output_while_draining_both_pipes():
@@ -280,57 +310,7 @@ async def test_command_timeout_terminates_local_client():
         await command(sys.executable, "-c", "import time; time.sleep(60)", timeout=0.05)
 
 
-async def test_docker_full_lifecycle_keeps_tests_out_until_grading(tmp_path, monkeypatch):
-    task = tmp_path / "task"
-    (task / "environment").mkdir(parents=True)
-    (task / "environment/Dockerfile").write_text("FROM fixture\nWORKDIR /repo\n")
-    (task / "tests").mkdir()
-    (task / "tests/test.sh").write_text("echo 1 > /logs/verifier/reward.txt")
-    (task / "task.toml").write_text(
-        '[agent]\nnetwork_mode="no-network"\n'
-        '[verifier]\nnetwork_mode="allowlist"\nallowed_hosts=["pypi.org"]\n'
-    )
-    calls = []
-    work = tmp_path / "results"
-
-    async def docker(*args, **kwargs):
-        calls.append(args)
-        if args[-1] == "git rev-parse HEAD":
-            return CommandResult("a" * 40 + "\n", "", 0, 0.1)
-        if args[:2] == ("docker", "cp") and args[2].endswith(":/logs/verifier"):
-            destination = work / "verifier"
-            destination.mkdir()
-            (destination / "reward.txt").write_text("1")
-        return CommandResult("", "", 0, 0.1)
-
-    monkeypatch.setattr(module, "command", docker)
-    async with DockerSandbox(task, work) as sandbox:
-        policy = work / "network/allowed_hosts.json"
-        assert json.loads(policy.read_text()) == []
-        assert not any(args[1] == "cp" for args in calls)
-        agent_run = next(a for a in calls if a[1] == "run" and sandbox.name in a)
-        assert sandbox.network in agent_run and "--cap-drop=ALL" in agent_run
-        assert any(a[1:4] == ("network", "create", "--internal") for a in calls)
-        assert "HTTP_PROXY=http://verifier-proxy:3128" in agent_run
-        assert any(flag.startswith("JAVA_TOOL_OPTIONS=-Dhttp.proxyHost=") for flag in agent_run)
-        await sandbox.run("printf x", workdir="/repo")
-        assert ("--workdir", "/repo") == calls[-1][2:4]
-        reward, _ = await sandbox.grade()
-        assert reward == 1
-        assert any("a" * 40 in args[-1] and "git add -A" in args[-1] for args in calls)
-        assert json.loads(policy.read_text()) == ["pypi.org"]
-        assert any(a[1] == "cp" and a[2] == str(task / "tests") + "/." for a in calls)
-    assert calls[-1][1:3] == ("network", "rm")
-    assert (work / "candidate.patch").is_file()
-
-
-async def test_failed_build_cannot_leak_a_running_container(tmp_path, monkeypatch):
-    task = tmp_path / "task"
-    (task / "environment").mkdir(parents=True)
-    (task / "environment/Dockerfile").write_text("FROM fixture")
-    (task / "task.toml").write_text(
-        '[agent]\nnetwork_mode="no-network"\n[verifier]\nnetwork_mode="no-network"\n'
-    )
+async def test_failed_build_cannot_leak_a_running_container(deepswe_task, tmp_path, monkeypatch):
     calls = []
 
     async def docker(*args, **kwargs):
@@ -339,6 +319,6 @@ async def test_failed_build_cannot_leak_a_running_container(tmp_path, monkeypatc
 
     monkeypatch.setattr(module, "command", docker)
     with pytest.raises(RuntimeError, match="build failed"):
-        async with DockerSandbox(task, tmp_path / "result"):
+        async with DockerSandbox(deepswe_task, tmp_path / "result"):
             pytest.fail("unexpected successful build")
     assert len(calls) == 1

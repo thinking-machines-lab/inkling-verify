@@ -6,45 +6,42 @@ APIs; each API adapter serves every benchmark.
 
 | Script | Subsets / cases | Grading |
 | --- | --- | --- |
-| `swe_bench.py` | Signal (250), Verified (500), Pro v1 (731), Multilingual (300) | Executable tests after native bash tool calls |
-| `deepswe.py` | DeepSWE v1.1 (113) | Committed patch tested in a fresh offline container |
+| `deepswe.py` | DeepSWE v1.1 (113) | Committed patch tested in a fresh container; offline by default |
 | `mmmu_pro.py` | Vision, Standard-4, Standard-10 (1,730 each) | Local multiple-choice answer extraction |
 | `hle_no_tools.py` | Text-only HLE without tools (2,158) | Structured judgment by the candidate or a separate judge |
 | `niah.py` | 5 context lengths × 11 depths × 10 samples | UUID retrieval from the visible answer |
 
-Defaults are SWE Signal, MMMU-Pro Vision, and HLE self-judging. HLE self-judging
-is diagnostic, not an official score from an independent judge. Conversations
+Defaults are MMMU-Pro Vision and HLE self-judging. HLE self-judging is diagnostic,
+not an official score from an independent judge. Conversations
 use native APIs and preserve original assistant responses, including reasoning
 and tool state. They do not reproduce private renderers or raw-token endpoints.
 
 ## Install
 
-Use Python 3.12 or newer on Linux or macOS. Coding benchmarks also require a
-local Linux Docker daemon and an x86-64 host, with access to Docker Hub and
-public ECR. The client host needs no GPU.
+Use Python 3.12 or newer on Linux or macOS. DeepSWE also requires a Linux Docker
+daemon and builds natively on ARM64 or x86-64. Image builds need access to public
+registries and package repositories. The client host needs no GPU.
 
 ```bash
 git clone https://github.com/thinking-machines-lab/inkling-vendor-verifier.git
 cd inkling-vendor-verifier
 python -m pip install -r requirements.txt
-python swe_bench.py --help
+python deepswe.py --help
 ```
 
 Each script has `prepare` and `run` subcommands and works directly from the
 checkout. Alternatively, `python -m pip install -e .` installs the equivalent
-`swe-bench`, `deepswe`, `mmmu-pro`, `hle-no-tools`, and `niah` commands. Both
-installation methods use `requirements.txt`; uv is not required.
+`deepswe`, `mmmu-pro`, `hle-no-tools`, and `niah` commands. Both installation
+methods use `requirements.txt`; uv is not required.
 
 ## Prepare data
 
-Coding preparation automatically downloads the selected benchmark's pinned task
-archive and verifies its checksums. The archive contains instructions, Docker
-build files, and grading tests. Private release access uses `GH_TOKEN`,
+DeepSWE preparation automatically downloads its pinned task archive and verifies
+its checksums. The archive contains instructions, Docker build files, and grading
+tests. Private release access uses `GH_TOKEN`,
 `GITHUB_TOKEN`, or an existing `gh auth login`; GitHub CLI is optional.
 
 ```bash
-python swe_bench.py prepare
-python swe_bench.py prepare --subset verified
 python deepswe.py prepare
 
 python mmmu_pro.py prepare --subset vision
@@ -57,18 +54,10 @@ python niah.py prepare --tokenizer MODEL_OR_DIRECTORY
 ```
 
 Preparation checks pinned data and writes `data/<benchmark>/manifest.json`;
-HLE uses `data/hle-self-judge`. Coding archives require both the expected archive
-checksum and canonical manifest/file checksums. Their manifests record source
-revisions and task provenance. Reference solutions are excluded. Downloads and
+HLE uses `data/hle-self-judge`. The DeepSWE archive requires both the expected
+archive checksum and canonical manifest/file checksums. Its manifest records
+source revisions and task provenance. Reference solutions are excluded. Downloads and
 results stay outside Git; HLE data and logs remain subject to its access terms.
-
-Signal contains 63 Verified, 121 Pro and 66 Multilingual tasks. Its bundle pins
-base-image digests, removes an optional organization-specific package-cache
-helper, and uses the already-allowlisted public Maven Central hostname for six
-tasks. Instructions, graders and network policies remain pinned. Full source
-subsets include every task without verifier-based filtering; `pro` is the
-731-task Pro v1 release. Their image tags and DeepSWE's solver image tags remain
-upstream tags, which can move. Docker builds can download packages.
 
 MMMU-Pro uses the test split at revision
 [`1ba55708b8588a8f9b180b8fec9e6435c88ce363`](https://huggingface.co/datasets/MMMU/MMMU_Pro/tree/1ba55708b8588a8f9b180b8fec9e6435c88ce363).
@@ -94,7 +83,7 @@ python mmmu_pro.py run --subset vision \
 ```
 
 Replace the script for another benchmark and use the subset prepared earlier.
-All five scripts share these API arguments:
+All four scripts share these API arguments:
 
 | Argument | Meaning |
 | --- | --- |
@@ -112,14 +101,15 @@ setting, the SDK uses its official API. Credentials are not written to results.
 Limited runs are marked `full_dataset: false`. Resume an interrupted run by
 repeating the identical command with `--resume`: completed cases are reused,
 failed cases restart from their first request, and prior attempts are retained.
-Dataset, selected cases, candidate/judge configuration, generation settings and
-concurrency must match. Code, SDK versions and environment headers are not
-compared; use a new output directory when changing them could affect results.
+Dataset, selected cases, candidate/judge configuration, generation settings,
+DeepSWE network access and concurrency must match. Code, SDK versions and
+environment headers are not compared; use a new output directory when changing
+them could affect results.
 Only one process may use an output directory at a time.
 
 ### Generation and judging
 
-| Default | SWE-bench / DeepSWE | MMMU-Pro | HLE candidate | NIAH |
+| Default | DeepSWE | MMMU-Pro | HLE candidate | NIAH |
 | --- | --- | --- | --- | --- |
 | Output tokens | 262,144 per tool trajectory | 131,072 | 262,144 | 128 |
 | Temperature / top-p | 1 / 1 | 1 / 1 | 1 / 1 | 0 / omitted |
@@ -184,33 +174,38 @@ Over-budget prompts fail preparation; requests are never truncated. Endpoints
 need room for the prepared prompt, rendering overhead and selected output budget.
 A complete run writes `grid.json` with accuracy by context length and depth.
 
-### Coding sandbox behavior
+### DeepSWE sandbox behavior
 
-Cases build or pull their environment, run a bash-only agent, then execute the
-task's verifier. Limits are 4,096 turns, 4,096 tool calls, the output budget and
-the task's timeout (eight hours for Signal; upstream values for source suites).
-Agent limits score zero for SWE-bench. DeepSWE still grades the committed patch.
+Cases build their environment, run a bash-only agent, then execute the task's
+verifier. Limits are 4,096 turns, 4,096 tool calls, the output budget and the
+task's timeout. The committed patch is graded even if the agent hits a limit.
 Bash output is capped at 16 KiB per stream; commands default to 300 seconds.
 Containers receive at least 8 GiB RAM, so size concurrency for the host and budget
 space for images and builds.
 
-SWE-bench copies held-out tests into the solver container after stopping agent
-background processes. Containers have no direct external network: an HTTP(S)
-proxy enforces each phase's policy on ports 80/443 and blocks private/link-local
-addresses. Signal has 246 offline and four allowlisted solve phases; 89 verifiers
-need allowlisted internet. Full Verified, Pro and Multilingual permit public
-HTTP(S) in both phases, following upstream defaults.
-
-DeepSWE runs both phases with Docker `--network none`, without a proxy. Its
-collection hook exports **committed changes only**; uncommitted edits are not
-submitted. The solver is removed and only `model.patch` enters a fresh verifier
+The solver and grader default to Docker `--network none`, with no internet
+access or proxy. Add `--allow-network` to `python deepswe.py run ...` to enable
+network access for **both** through Docker's bridge network. This overrides the
+upstream offline policy and is recorded in results and resume settings.
+The model API client runs outside the sandbox and sends tool commands into it.
+The collection hook exports **committed changes only**;
+uncommitted edits are not submitted. The solver is removed and only `model.patch` enters a fresh verifier
 container. Upstream limits are three hours solving and 30 minutes grading.
 Containers disable Cargo cache expiry and set `TERM=xterm-256color` for offline
-Rust dependencies and Node readline tests. Image pulls and builds need internet.
+Rust dependencies and Node readline tests. Setup downloads and image builds
+need internet regardless of this flag.
+
+DeepSWE uses the same build path on ARM64 and x86-64, without a platform flag or
+emulation. Deno and cargo-nextest downloads select the native binary at their
+original versions; instructions and grading tests are unchanged. The verifier
+image extends the same pristine task image used to start the solver. Initial
+builds can take time and disk space; Docker caches them for later runs. Start
+with `--limit 1 --concurrency 1` on a new host. Generated Dockerfiles and build
+logs are saved with each attempt; the checksummed task bundle is never modified.
 
 Missing/invalid rewards or failed DeepSWE patch collection are infrastructure
 failures, not zero scores. Patches, verifier output and reward artifacts are
-saved. Containers and per-case networks are removed on exit; built images remain.
+saved. Containers are removed on exit; built images remain.
 
 ## Results
 

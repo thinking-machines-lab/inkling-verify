@@ -1,4 +1,4 @@
-"""Datacurve DeepSWE with committed patches and offline, separate verification."""
+"""Datacurve DeepSWE with committed patches and separate verification."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from inkling_vendor_verifier.types import Example
 
 class DeepSWE(CodeBenchmark):
     name = cache_name = "deepswe"
-    zero_reward_on_limit = False
 
     def prepare(self, data_dir: Path) -> Path:
         return task_bundles.prepare(data_dir, self.name)
@@ -23,11 +22,16 @@ class DeepSWE(CodeBenchmark):
 
 
 def main() -> None:
-    root, _, _ = parser("deepswe")
+    root, _, run = parser("deepswe")
+    run.add_argument(
+        "--allow-network",
+        action="store_true",
+        help="enable network access for both solver and grader (default: disabled)",
+    )
     args = root.parse_args()
-    benchmark = DeepSWE()
     if args.command == "prepare":
+        benchmark = DeepSWE()
         benchmark.prepare(args.data_dir.resolve())
         print(f"Prepared {benchmark.name} in {args.data_dir}")
     else:
-        asyncio.run(evaluate(benchmark, args))
+        asyncio.run(evaluate(DeepSWE(allow_network=args.allow_network), args))

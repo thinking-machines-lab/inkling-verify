@@ -216,6 +216,7 @@ async def test_completed_resume_makes_no_calls_and_has_zero_session_throughput(e
         "judge-model",
         "judge-base_url",
         "judge-generation",
+        "allow_network",
     ],
 )
 async def test_resume_rejects_changed_workload(execute, change):
@@ -227,7 +228,7 @@ async def test_resume_rejects_changed_workload(execute, change):
             "model": "judge-model",
             "base_url": "https://judge.example/v1",
             "generation": {"max_tokens": 25},
-        }
+        },
     }
     examples = [example("one"), example("two")]
     generation = GENERATION
@@ -242,6 +243,8 @@ async def test_resume_rejects_changed_workload(execute, change):
         examples = examples[:1] if change == "selection" else list(reversed(examples))
     elif change == "generation":
         generation = replace(GENERATION, max_tokens=99)
+    elif change == "allow_network":
+        configuration = configuration | {"allow_network": True}
     else:
         field = change.removeprefix("judge-")
         value = (

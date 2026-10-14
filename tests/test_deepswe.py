@@ -3,7 +3,6 @@ import asyncio
 import pytest
 
 from inkling_vendor_verifier import code_agent
-from inkling_vendor_verifier.benchmarks import swe_bench as swe
 from inkling_vendor_verifier.benchmarks.deepswe import DeepSWE
 from inkling_vendor_verifier.sandbox import CommandResult
 from inkling_vendor_verifier.types import (
@@ -58,12 +57,17 @@ class Provider:
 @pytest.fixture
 def task(monkeypatch):
     sandbox = Sandbox()
-    monkeypatch.setattr(code_agent, "DockerSandbox", lambda *args: sandbox)
+
+    def create(*args, allow_network):
+        sandbox.allow_network = allow_network
+        return sandbox
+
+    monkeypatch.setattr(code_agent, "DockerSandbox", create)
     example = Example(
         "task",
         (Message("user", (Text("fix the bug"),)),),
         "",
-        {"task_dir": "/task", "suite": "verified"},
+        {"task_dir": "/task", "suite": "deepswe"},
     )
     return example, sandbox
 
@@ -79,9 +83,8 @@ def task(monkeypatch):
         ("timeout", 0, 0),
     ],
 )
-@pytest.mark.parametrize("benchmark", [swe.SWEBench(), DeepSWE()])
-async def test_limits_preserve_each_benchmarks_grading_contract(
-    task, tmp_path, monkeypatch, limit, tool_count, executed, benchmark
+async def test_limits_still_grade_committed_patch(
+    task, tmp_path, monkeypatch, limit, tool_count, executed
 ):
     example, sandbox = task
     monkeypatch.setattr(code_agent, "MAX_TURNS", 1 if limit == "max_turns" else 2)
@@ -109,8 +112,8 @@ async def test_limits_preserve_each_benchmarks_grading_contract(
             pytest.fail("Agent deadline did not cancel generation")
 
         monkeypatch.setattr(provider, "generate", wait_for_deadline)
-    result = await benchmark.evaluate(example, provider, Generation(30), tmp_path)
-    assert result.score == (1 if isinstance(benchmark, DeepSWE) else 0)
+    result = await DeepSWE().evaluate(example, provider, Generation(30), tmp_path)
+    assert result.score == 1
     assert result.details["verifier_reward"] == 1
     assert result.details["stop_reason"] == ("max_tokens" if limit == "length" else limit)
     assert result.details["turns"] == len(provider.calls) == 1
@@ -119,7 +122,10 @@ async def test_limits_preserve_each_benchmarks_grading_contract(
     assert sandbox.graded
 
 
-async def test_bad_tool_arguments_are_model_feedback_not_host_commands(task, tmp_path):
+@pytest.mark.parametrize("allow_network", [False, True])
+async def test_bad_tool_arguments_are_model_feedback_not_host_commands(
+    task, tmp_path, allow_network
+):
     example, sandbox = task
     provider = Provider(
         [
@@ -127,9 +133,16 @@ async def test_bad_tool_arguments_are_model_feedback_not_host_commands(task, tmp
             reply("done"),
         ]
     )
-    await swe.SWEBench().evaluate(example, provider, Generation(30), tmp_path)
+    result = await DeepSWE(allow_network=allow_network).evaluate(
+        example, provider, Generation(30), tmp_path
+    )
     assert not sandbox.commands
     assert "positive integer" in provider.calls[1][0][-1].text
+    assert sandbox.allow_network is allow_network
+    assert ("no internet access" in provider.calls[0][2][0].description) is not allow_network
+    assert result.details["allow_network"] is allow_network
+    assert result.details["solve_allowed_hosts"] == (["*"] if allow_network else [])
+    assert result.details["verifier_allowed_hosts"] == (["*"] if allow_network else [])
 
 
 async def test_provider_failure_is_not_a_zero_score(task, tmp_path):
@@ -140,12 +153,5 @@ async def test_provider_failure_is_not_a_zero_score(task, tmp_path):
             raise TimeoutError("API failed")
 
     with pytest.raises(TimeoutError, match="API failed"):
-        await swe.SWEBench().evaluate(example, BrokenProvider(), Generation(30), tmp_path)
+        await DeepSWE().evaluate(example, BrokenProvider(), Generation(30), tmp_path)
     assert not sandbox.graded
-
-
-@pytest.mark.parametrize("subset", ["all", "deepswe"])
-def test_swe_subsets_exclude_other_benchmarks(subset):
-    assert swe.SWEBench().name == "swe-bench-signal"
-    with pytest.raises(ValueError, match="Unknown SWE-bench subset"):
-        swe.SWEBench(subset)

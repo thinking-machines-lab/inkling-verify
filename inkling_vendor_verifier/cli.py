@@ -142,6 +142,8 @@ async def evaluate(
         "selected_size": len(examples),
         "full_dataset": len(examples) == dataset_size,
     }
+    if code and benchmark.allow_network:
+        configuration["allow_network"] = True
     async with AsyncExitStack() as stack:
         provider = await stack.enter_async_context(
             APIProvider(

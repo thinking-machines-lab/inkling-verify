@@ -68,37 +68,6 @@ class RecordingProvider:
         return response
 
 
-def _summary(
-    results: dict[str, dict[str, Any]],
-    expected: int,
-    started: float,
-    *,
-    status: str,
-    previous_output_tokens: int = 0,
-) -> dict[str, Any]:
-    completed = len(results)
-    score_sum = sum(result["score"] for result in results.values())
-    seconds = time.monotonic() - started
-    usage = {
-        key: sum(result["usage"][key] for result in results.values())
-        for key in ("input_tokens", "output_tokens", "cached_input_tokens")
-    }
-    return {
-        "status": status,
-        "updated_utc": datetime.now(UTC).isoformat(),
-        "expected": expected,
-        "completed": completed,
-        "coverage": completed / expected,
-        "accuracy": score_sum / completed if status == "completed" else None,
-        "provisional_accuracy": score_sum / completed if completed else None,
-        "usage": usage,
-        "current_session_seconds": seconds,
-        "current_session_completed_output_tokens_per_second": (
-            (usage["output_tokens"] - previous_output_tokens) / seconds if seconds else 0
-        ),
-    }
-
-
 async def run(
     benchmark: Benchmark,
     examples: Sequence[Example],
@@ -179,15 +148,29 @@ async def run(
                 recorded_usage[key] += value
 
         def summary(status: str) -> dict[str, Any]:
-            value = _summary(
-                results,
-                len(examples),
-                started,
-                status=status,
-                previous_output_tokens=previous_output_tokens,
-            )
-            value["recorded_usage"] = dict(recorded_usage)
-            value["full_dataset"] = configuration.get("full_dataset", True)
+            completed = len(results)
+            score_sum = sum(result["score"] for result in results.values())
+            seconds = time.monotonic() - started
+            usage = {
+                key: sum(result["usage"][key] for result in results.values())
+                for key in ("input_tokens", "output_tokens", "cached_input_tokens")
+            }
+            value = {
+                "status": status,
+                "updated_utc": datetime.now(UTC).isoformat(),
+                "expected": len(examples),
+                "completed": completed,
+                "coverage": completed / len(examples),
+                "accuracy": score_sum / completed if status == "completed" else None,
+                "provisional_accuracy": score_sum / completed if completed else None,
+                "usage": usage,
+                "current_session_seconds": seconds,
+                "current_session_completed_output_tokens_per_second": (
+                    (usage["output_tokens"] - previous_output_tokens) / seconds if seconds else 0
+                ),
+                "recorded_usage": dict(recorded_usage),
+                "full_dataset": configuration.get("full_dataset", True),
+            }
             write_json(output_dir / "summary.json", value)
             return value
 

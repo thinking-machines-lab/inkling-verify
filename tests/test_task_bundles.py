@@ -12,7 +12,6 @@ import pytest
 
 from inkling_vendor_verifier.benchmarks import task_bundles as bundles
 from inkling_vendor_verifier.benchmarks.deepswe import DeepSWE
-from inkling_vendor_verifier.benchmarks.swe_bench import SWEBench
 
 
 def pack(source, archive, pin):
@@ -24,9 +23,9 @@ def pack(source, archive, pin):
 
 
 @pytest.fixture
-def bundle(tmp_path, monkeypatch, request):
-    name = getattr(request, "param", "swe-bench-signal")
-    benchmark = DeepSWE() if name == "deepswe" else SWEBench(name.removeprefix("swe-bench-"))
+def bundle(tmp_path, monkeypatch):
+    benchmark = DeepSWE()
+    name = benchmark.name
     source = tmp_path / "source"
     tasks, hashes = [], {}
     for task_id in ("z_task", "a_task"):
@@ -55,17 +54,6 @@ def bundle(tmp_path, monkeypatch, request):
     return benchmark, source, archive, manifest, pin
 
 
-@pytest.mark.parametrize(
-    "bundle",
-    [
-        "swe-bench-signal",
-        "swe-bench-verified",
-        "swe-bench-pro",
-        "swe-bench-multilingual",
-        "deepswe",
-    ],
-    indirect=True,
-)
 def test_prepare_preserves_task_order_assets_and_metadata(tmp_path, bundle):
     benchmark, source, archive, manifest, _ = bundle
     data = tmp_path / "data"
