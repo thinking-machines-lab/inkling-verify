@@ -7,18 +7,20 @@ import hashlib
 import json
 from contextlib import AsyncExitStack
 from functools import partial
+from unittest.mock import AsyncMock
 
 import pytest
 from PIL import Image
 
-from inkling_vendor_verifier import code_agent
+from inkling_vendor_verifier import code_agent, python_tools
 from inkling_vendor_verifier.benchmarks import hle_no_tools as hle
 from inkling_vendor_verifier.benchmarks import mmmu_pro as mmmu
 from inkling_vendor_verifier.benchmarks import niah
 from inkling_vendor_verifier.benchmarks.deepswe import DeepSWE
 from inkling_vendor_verifier.runner import run
 from inkling_vendor_verifier.sandbox import CommandResult
-from inkling_vendor_verifier.types import Example, Generation, Message, Text
+from inkling_vendor_verifier.types import Example, Generation, Message, Text, ToolCall
+from inkling_vendor_verifier.types import Image as DisplayImage
 
 APIS = ("openai-completions", "openai-responses", "anthropic")
 GENERATION = Generation(131072, temperature=None, top_p=None, reasoning_effort="high")
@@ -436,3 +438,116 @@ async def test_mmmu_standard_interleaved_images_across_apis(
         else:
             encoded = parts[index]["source"]["data"]
         assert base64.b64decode(encoded) == image_bytes
+
+
+@pytest.mark.parametrize("api", APIS)
+@pytest.mark.parametrize("subset", mmmu.SUBSETS)
+async def test_mmmu_tools_multi_turn_images_scoring_and_resume(
+    monkeypatch, sdk_provider, reply, tmp_path, api, subset
+):
+    image_path = tmp_path / "question.png"
+    Image.new("RGB", (3, 2), color=(9, 18, 27)).save(image_path)
+    image_bytes = image_path.read_bytes()
+    image_record = {
+        "image_path": str(image_path),
+        "image_sha256": hashlib.sha256(image_bytes).hexdigest(),
+    }
+    example = Example(
+        "with-tools",
+        (Message("user", (Text("Read <image 1>."),)),),
+        "B",
+        {"options": {"A": "triangle", "B": "rectangle"}}
+        | (image_record if subset == "vision" else {"images": {"image_1": image_record}}),
+    )
+    calls = [
+        ToolCall("crop", "ipython", json.dumps({"code": "display(image)"})),
+        ToolCall("measure", "ipython", json.dumps({"code": "image.size"})),
+    ]
+    executed, closed = [], []
+
+    class PythonSandbox(python_tools.PythonSandbox):
+        async def __aenter__(self):
+            self.work_dir.mkdir(parents=True, exist_ok=True)
+            self._docker = AsyncMock()
+            return self
+
+        async def __aexit__(self, *args):
+            closed.append(True)
+
+        async def execute(self, arguments):
+            executed.append(arguments)
+            return (
+                (DisplayImage(image_bytes, "image/png"),)
+                if len(executed) == 1
+                else (Text("(3, 2)"),)
+            )
+
+    monkeypatch.setattr(python_tools, "PythonSandbox", PythonSandbox)
+    provider, requests = sdk_provider(
+        api,
+        [
+            reply(api, None, tools=(calls[0],)),
+            reply(api, None, tools=(calls[1],)),
+            reply(api, "Answer: B"),
+        ],
+    )
+    benchmark = mmmu.MMMUPro(subset, with_tools=True)
+    output = tmp_path / "results"
+    generation = Generation(131075)
+    async with provider:
+        for resume in (False, True):
+            summary = await run(
+                benchmark,
+                [example],
+                provider,
+                generation,
+                output,
+                configuration={"dataset": {"fixture": "mmmu"}},
+                concurrency=1,
+                resume=resume,
+            )
+            assert summary["accuracy"] == 1
+        with pytest.raises(ValueError, match="Resume requires identical"):
+            await run(
+                mmmu.MMMUPro(subset),
+                [example],
+                provider,
+                generation,
+                output,
+                configuration={"dataset": {"fixture": "mmmu"}},
+                concurrency=1,
+                resume=True,
+            )
+    assert executed == [call.arguments for call in calls] and closed == [True]
+    result = json.loads(next(output.glob("samples/*/result.json")).read_text())
+    assert result["answer"] == "B"
+    assert result["details"] == {
+        "parse_method": "answer_prefix",
+        "stop_reason": "stop",
+        "turns": 3,
+        "tool_calls": 2,
+        "generated_tokens": 15,
+        "with_tools": True,
+        "allow_network": False,
+        "token_budget_kind": "cumulative_generated_tokens",
+    }
+    assert len(list(output.glob("samples/*/attempt-*/call-*.json"))) == 3
+    bodies = [json.loads(request.content) for request in requests]
+    budget_key = {
+        "openai-completions": "max_completion_tokens",
+        "openai-responses": "max_output_tokens",
+        "anthropic": "max_tokens",
+    }[api]
+    assert [body[budget_key] for body in bodies] == [131072, 131070, 131065]
+    first = bodies[0]
+    system = (
+        first["system"][0]["text"] if api == "anthropic" else conversation(first, api)[0]["content"]
+    )
+    assert system == python_tools.SYSTEM_PROMPT
+    assert "/sandbox/images/image_0.png" in json.dumps(first)
+    for body in bodies:
+        tool = body["tools"][0]
+        assert (tool["function"] if api == "openai-completions" else tool)["name"] == "ipython"
+    encoded = base64.b64encode(image_bytes).decode()
+    assert [json.dumps(body).count(encoded) for body in bodies] == [1, 2, 2]
+    assert "(3, 2)" in json.dumps(bodies[2])

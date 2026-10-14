@@ -1,4 +1,5 @@
 import json
+from dataclasses import asdict
 from functools import partial
 
 import httpx
@@ -7,6 +8,7 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from inkling_vendor_verifier import providers
+from inkling_vendor_verifier.types import ToolCall
 
 
 @pytest.fixture
@@ -45,7 +47,9 @@ def response_body():
     def create(api, text="answer", *, tools=(), length=False, cached=True):
         input_tokens, output_tokens = (13, 7) if cached else (10, 5)
         calls = [
-            {"id": f"call_{i}", "name": "bash", "arguments": json.dumps({"command": command})}
+            asdict(command)
+            if isinstance(command, ToolCall)
+            else {"id": f"call_{i}", "name": "bash", "arguments": json.dumps({"command": command})}
             for i, command in enumerate(tools, 1)
         ]
         if api == "openai-completions":

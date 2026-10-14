@@ -24,7 +24,7 @@ class DeepSWE(CodeBenchmark):
 def main() -> None:
     root, _, run = parser("deepswe")
     run.add_argument(
-        "--allow-network",
+        "--with-network",
         action="store_true",
         help="enable network access for both solver and grader (default: disabled)",
     )
@@ -34,4 +34,4 @@ def main() -> None:
         benchmark.prepare(args.data_dir.resolve())
         print(f"Prepared {benchmark.name} in {args.data_dir}")
     else:
-        asyncio.run(evaluate(DeepSWE(allow_network=args.allow_network), args))
+        asyncio.run(evaluate(DeepSWE(allow_network=args.with_network), args))

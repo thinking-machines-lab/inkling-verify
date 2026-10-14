@@ -25,6 +25,7 @@ dependencies = {file = ["requirements.txt"]}
 include = ["inkling_vendor_verifier*"]
 
 [tool.setuptools.package-data]
+"inkling_vendor_verifier" = ["python-tools.Dockerfile"]
 "inkling_vendor_verifier.benchmarks" = ["task_bundles.json"]
 
 [tool.pytest.ini_options]

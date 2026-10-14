@@ -6,6 +6,7 @@ import base64
 import copy
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any, Self, get_args
 
 from anthropic import AsyncAnthropic
@@ -46,9 +47,34 @@ def _tool_id(message: Message) -> str:
     return message.tool_call_id
 
 
+def _openai_tool_images(messages: Sequence[Message]) -> list[Message]:
+    result = []
+    images: list[Text | Image] = []
+    for message in messages:
+        if message.role != "tool" and images:
+            result.append(Message("user", tuple(images)))
+            images = []
+        if message.role == "tool" and any(isinstance(part, Image) for part in message.content):
+            text = []
+            image_index = 0
+            for part in message.content:
+                if isinstance(part, Image):
+                    image_index += 1
+                    label = f"Image {image_index} from tool call {_tool_id(message)}"
+                    text.append(Text(f"\n[{label} attached below.]\n"))
+                    images.extend((Text(f"{label}:"), part))
+                else:
+                    text.append(part)
+            message = replace(message, content=tuple(text))
+        result.append(message)
+    if images:
+        result.append(Message("user", tuple(images)))
+    return result
+
+
 def _chat_messages(messages: Sequence[Message]) -> list[dict[str, Any]]:
     result = []
-    for message in messages:
+    for message in _openai_tool_images(messages):
         native = _native(message, "openai-completions")
         if native is not None:
             result.append(native)
@@ -73,7 +99,7 @@ def _chat_messages(messages: Sequence[Message]) -> list[dict[str, Any]]:
 
 def _response_messages(messages: Sequence[Message]) -> list[dict[str, Any]]:
     result = []
-    for message in messages:
+    for message in _openai_tool_images(messages):
         native = _native(message, "openai-responses")
         if native is not None:
             result.extend(native)
@@ -115,10 +141,6 @@ def _anthropic_messages(
         role = "user" if message.role == "tool" else message.role
         if native is not None:
             content = native
-        elif message.role == "tool":
-            content = [
-                {"type": "tool_result", "tool_use_id": _tool_id(message), "content": _text(message)}
-            ]
         else:
             content = [
                 {"type": "text", "text": part.text}
@@ -133,6 +155,16 @@ def _anthropic_messages(
                 }
                 for part in message.content
             ]
+            if message.role == "tool":
+                content = [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": _tool_id(message),
+                        "content": content
+                        if any(isinstance(part, Image) for part in message.content)
+                        else _text(message),
+                    }
+                ]
         if message.role == "tool" and result and result[-1]["role"] == "user":
             result[-1]["content"].extend(content)
         else:

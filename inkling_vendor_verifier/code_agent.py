@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-from dataclasses import asdict, replace
+from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 
 from inkling_vendor_verifier.sandbox import DockerSandbox
+from inkling_vendor_verifier.tool_loop import run_tools
 from inkling_vendor_verifier.types import (
     Evaluation,
     Example,
     Generation,
-    Message,
     Provider,
     Text,
     Tool,
@@ -45,6 +45,24 @@ def bash_tool(*, allow_network: bool = False) -> Tool:
     )
 
 
+async def run_bash(sandbox: DockerSandbox, arguments: str) -> tuple[Text, ...]:
+    try:
+        args = json.loads(arguments)
+        if not isinstance(args, dict) or args.keys() - {"command", "workdir", "timeout"}:
+            raise ValueError("Expected bash command, optional workdir and timeout")
+        if not isinstance(args.get("command"), str) or not args["command"]:
+            raise ValueError("command must be a nonempty string")
+        if "workdir" in args and not isinstance(args["workdir"], str):
+            raise ValueError("workdir must be a string")
+        timeout = args.get("timeout", 300)
+        if type(timeout) is not int or timeout <= 0:
+            raise ValueError("timeout must be a positive integer in seconds")
+    except (ValueError, TypeError) as error:
+        return (Text(json.dumps({"error": str(error)})),)
+    result = await sandbox.run(args["command"], workdir=args.get("workdir"), timeout=timeout)
+    return (Text(json.dumps(asdict(result))),)
+
+
 class CodeBenchmark:
     def __init__(self, *, allow_network: bool = False):
         self.allow_network = allow_network
@@ -58,92 +76,27 @@ class CodeBenchmark:
         *,
         judge: Provider | None = None,
     ) -> Evaluation:
-        messages = list(example.messages)
-        remaining = generation.max_tokens
-        calls = 0
-        turns = 0
-        stop = "max_turns"
-        answer = ""
         async with DockerSandbox(
             Path(example.metadata["task_dir"]), work_dir, allow_network=self.allow_network
         ) as sandbox:
-            tool = bash_tool(allow_network=self.allow_network)
-            deadline = asyncio.timeout(
-                float(sandbox.config.get("agent", {}).get("timeout_sec", 28800))
+            answer, details = await run_tools(
+                provider,
+                generation,
+                example.messages,
+                bash_tool(allow_network=self.allow_network),
+                partial(run_bash, sandbox),
+                max_turns=MAX_TURNS,
+                max_tool_calls=MAX_TOOL_CALLS,
+                max_turn_tokens=generation.max_tokens,
+                timeout=float(sandbox.config.get("agent", {}).get("timeout_sec", 28800)),
             )
-            try:
-                async with deadline:
-                    for turns in range(1, MAX_TURNS + 1):
-                        response = await provider.generate(
-                            messages, replace(generation, max_tokens=remaining), tools=(tool,)
-                        )
-                        if response.usage.output_tokens <= 0:
-                            raise RuntimeError(
-                                "DeepSWE generation requires positive reported output token usage"
-                            )
-                        remaining -= response.usage.output_tokens
-                        messages.append(response.message)
-                        answer = response.text
-                        if response.stop_reason == "length" or remaining <= 0:
-                            stop = "max_tokens"
-                            break
-                        if not response.message.tool_calls:
-                            stop = response.stop_reason
-                            break
-                        if calls + len(response.message.tool_calls) > MAX_TOOL_CALLS:
-                            stop = "max_tool_calls"
-                            break
-                        for call in response.message.tool_calls:
-                            calls += 1
-                            try:
-                                if call.name != "bash":
-                                    raise ValueError(f"Unknown tool: {call.name}")
-                                args = json.loads(call.arguments)
-                                if not isinstance(args, dict) or args.keys() - {
-                                    "command",
-                                    "workdir",
-                                    "timeout",
-                                }:
-                                    raise ValueError(
-                                        "Expected bash command, optional workdir and timeout"
-                                    )
-                                if not isinstance(args.get("command"), str) or not args["command"]:
-                                    raise ValueError("command must be a nonempty string")
-                                if "workdir" in args and not isinstance(args["workdir"], str):
-                                    raise ValueError("workdir must be a string")
-                                timeout = args.get("timeout", 300)
-                                if type(timeout) is not int or timeout <= 0:
-                                    raise ValueError(
-                                        "timeout must be a positive integer in seconds"
-                                    )
-                            except (ValueError, TypeError) as error:
-                                result_text = json.dumps({"error": str(error)})
-                            else:
-                                result = await sandbox.run(
-                                    args["command"], workdir=args.get("workdir"), timeout=timeout
-                                )
-                                result_text = json.dumps(asdict(result))
-                            messages.append(
-                                Message("tool", (Text(result_text),), tool_call_id=call.id)
-                            )
-                        if calls == MAX_TOOL_CALLS:
-                            stop = "max_tool_calls"
-                            break
-            except TimeoutError:
-                if not deadline.expired():
-                    raise
-                stop = "timeout"
             reward, grade = await sandbox.grade()
             return Evaluation(
                 score=reward,
                 answer=answer,
                 details={
                     "suite": example.metadata["suite"],
-                    "stop_reason": stop,
-                    "turns": turns,
-                    "tool_calls": calls,
-                    "generated_tokens": generation.max_tokens - remaining,
-                    "token_budget_kind": "cumulative_generated_tokens",
+                    **details,
                     "verifier_reward": reward,
                     "allow_network": self.allow_network,
                     "solve_allowed_hosts": ["*"] if self.allow_network else [],

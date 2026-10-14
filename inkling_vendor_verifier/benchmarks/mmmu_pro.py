@@ -18,6 +18,7 @@ from PIL import Image as PILImage
 
 from inkling_vendor_verifier.benchmarks.data import read_cache, required_text, write_cache
 from inkling_vendor_verifier.cli import evaluate, parser
+from inkling_vendor_verifier.tool_loop import run_tools
 from inkling_vendor_verifier.types import (
     Evaluation,
     Example,
@@ -47,6 +48,9 @@ STANDARD_PROMPT = (
     "Think step by step before answering."
 )
 IMAGE_TOKEN = re.compile(r"<image\s+(\d+)>")
+TOOLS_MAX_TURNS = 128
+TOOLS_MAX_CALLS = 128
+TOOLS_MAX_TURN_TOKENS = 128 * 1024
 
 
 def parse_answer(
@@ -174,17 +178,18 @@ def _read_image(record: dict[str, str]) -> Image:
 
 
 class MMMUPro:
-    def __init__(self, subset: str = "vision") -> None:
+    def __init__(self, subset: str = "vision", *, with_tools: bool = False) -> None:
         if subset not in SUBSETS:
             raise ValueError(f"Unknown MMMU-Pro subset: {subset}")
         self.subset = subset
-        self.name = f"mmmu-pro-{subset}"
-        self.cache_name = self.name
+        self.with_tools = with_tools
+        self.cache_name = f"mmmu-pro-{subset}"
+        self.name = self.cache_name + ("-with-tools" if with_tools else "")
 
     def prepare(self, data_dir: Path) -> None:
         from datasets import load_dataset
 
-        destination = data_dir / self.name
+        destination = data_dir / self.cache_name
         if destination.exists():
             self.load(data_dir)
             return
@@ -195,7 +200,7 @@ class MMMUPro:
                 f"Expected {EXPECTED_COUNT} MMMU-Pro {self.subset} rows, got {len(dataset)}"
             )
         with tempfile.TemporaryDirectory(prefix="mmmu-prepare-", dir=data_dir) as temporary:
-            staging = Path(temporary) / self.name
+            staging = Path(temporary) / self.cache_name
             (staging / "images").mkdir(parents=True)
             rows = [_prepare_row(row, staging, self.subset) for row in dataset]
             if len({row["id"] for row in rows}) != EXPECTED_COUNT:
@@ -204,7 +209,7 @@ class MMMUPro:
             staging.rename(destination)
 
     def load(self, data_dir: Path) -> list[Example]:
-        directory = data_dir / self.name
+        directory = data_dir / self.cache_name
         rows = read_cache(directory, repository=REPOSITORY, revision=REVISION, count=EXPECTED_COUNT)
         examples = []
         for row in rows:
@@ -269,20 +274,38 @@ class MMMUPro:
                 parts.append(Text(prompt[start:]))
             content = tuple(parts)
         messages = (Message("user", content),)
-        response = await provider.generate(messages, generation)
-        if response.stop_reason == "tool_calls" or response.message.tool_calls:
-            raise ValueError("MMMU-Pro requested no tools but received a tool call")
-        text = response.text.strip()
+        if self.with_tools:
+            from inkling_vendor_verifier.python_tools import SYSTEM_PROMPT, TOOL, PythonSandbox
+
+            async with PythonSandbox(work_dir) as sandbox:
+                staged = await sandbox.stage(messages)
+                text, details = await run_tools(
+                    provider,
+                    generation,
+                    [Message("system", (Text(SYSTEM_PROMPT),)), *staged],
+                    TOOL,
+                    sandbox.execute,
+                    max_turns=TOOLS_MAX_TURNS,
+                    max_tool_calls=TOOLS_MAX_CALLS,
+                    max_turn_tokens=TOOLS_MAX_TURN_TOKENS,
+                )
+            details["with_tools"] = True
+            details["allow_network"] = False
+        else:
+            response = await provider.generate(messages, generation)
+            if response.stop_reason == "tool_calls" or response.message.tool_calls:
+                raise ValueError("MMMU-Pro requested no tools but received a tool call")
+            text = response.text
+            details = {"stop_reason": response.stop_reason}
+        text = text.strip()
         if not text:
-            return Evaluation(
-                0.0, "", {"parse_method": "empty", "stop_reason": response.stop_reason}
-            )
+            return Evaluation(0.0, "", {"parse_method": "empty", **details})
         options = example.metadata["options"]
         predicted, method = parse_answer(text, list(options), options, task_id=example.id)
         return Evaluation(
             float(predicted == example.target),
             predicted,
-            {"parse_method": method, "stop_reason": response.stop_reason},
+            {"parse_method": method, **details},
         )
 
 
@@ -290,10 +313,18 @@ def main() -> None:
     root, prepare, run = parser("mmmu-pro")
     for command in (prepare, run):
         command.add_argument("--subset", choices=SUBSETS, default="vision")
+    run.add_argument(
+        "--with-tools", action="store_true", help="enable an offline, persistent Python image tool"
+    )
     args = root.parse_args()
-    benchmark = MMMUPro(args.subset)
     if args.command == "prepare":
+        benchmark = MMMUPro(args.subset)
         benchmark.prepare(args.data_dir.resolve())
         print(f"Prepared {benchmark.name} in {args.data_dir}")
     else:
-        asyncio.run(evaluate(benchmark, args))
+        if args.with_tools:
+            if args.max_output_tokens is None:
+                args.max_output_tokens = 512 * 1024
+            if args.concurrency is None:
+                args.concurrency = 4
+        asyncio.run(evaluate(MMMUPro(args.subset, with_tools=args.with_tools), args))

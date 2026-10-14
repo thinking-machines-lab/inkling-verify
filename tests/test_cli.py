@@ -100,6 +100,40 @@ def test_deepswe_prepare_rejects_subsets(monkeypatch, capsys):
     assert "unrecognized arguments: --subset" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("overrides", [[], ["--max-output-tokens", "1234", "--concurrency", "2"]])
+def test_mmmu_tools_defaults_and_overrides(monkeypatch, overrides):
+    captured = {}
+
+    async def evaluate(benchmark, args):
+        captured.update(benchmark=benchmark, args=args)
+
+    monkeypatch.setattr(mmmu, "evaluate", evaluate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "mmmu_pro.py",
+            "run",
+            "--with-tools",
+            "--subset",
+            "standard-4",
+            "--api",
+            "anthropic",
+            "--model",
+            "candidate",
+            "--output",
+            "results",
+            *overrides,
+        ],
+    )
+    mmmu.main()
+    assert captured["benchmark"].with_tools is True
+    assert captured["benchmark"].name == "mmmu-pro-standard-4-with-tools"
+    assert captured["benchmark"].cache_name == "mmmu-pro-standard-4"
+    args = captured["args"]
+    assert (args.max_output_tokens, args.concurrency) == ((1234, 2) if overrides else (524288, 4))
+
+
 @pytest.mark.parametrize(
     "flag,value",
     [
@@ -261,7 +295,7 @@ async def test_cli_records_dataset_and_endpoint_without_secrets_and_marks_smoke(
 
 
 @pytest.mark.parametrize("module", [deepswe, hle, mmmu, niah])
-def test_only_deepswe_accepts_allow_network(monkeypatch, module):
+def test_only_deepswe_accepts_with_network(monkeypatch, module):
     async def evaluate(benchmark, args):
         assert isinstance(benchmark, deepswe.DeepSWE)
         assert benchmark.allow_network is True
@@ -279,7 +313,7 @@ def test_only_deepswe_accepts_allow_network(monkeypatch, module):
             "candidate",
             "--output",
             "results",
-            "--allow-network",
+            "--with-network",
         ],
     )
     if module is deepswe:

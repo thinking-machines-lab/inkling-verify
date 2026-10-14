@@ -71,6 +71,7 @@ def test_load_rejects_image_corruption_before_completed_resume(tmp_path, monkeyp
     )
     write_cache(directory, [row], repository=mmmu_pro.REPOSITORY, revision=mmmu_pro.REVISION)
     assert len(MMMUPro().load(tmp_path)) == 1
+    assert MMMUPro(with_tools=True).load(tmp_path) == MMMUPro().load(tmp_path)
     (directory / row["image"]).write_bytes(b"corrupted after completion")
     with pytest.raises(ValueError, match="Image checksum mismatch"):
         MMMUPro().load(tmp_path)

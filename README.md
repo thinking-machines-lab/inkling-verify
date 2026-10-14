@@ -18,9 +18,10 @@ and tool state. They do not reproduce private renderers or raw-token endpoints.
 
 ## Install
 
-Use Python 3.12 or newer on Linux or macOS. DeepSWE also requires a Linux Docker
-daemon and builds natively on ARM64 or x86-64. Image builds need access to public
-registries and package repositories. The client host needs no GPU.
+Use Python 3.12 or newer on Linux or macOS. DeepSWE and MMMU-Pro with tools also
+require a Linux Docker daemon and build natively on ARM64 or x86-64. A compatible
+Podman `docker` command works too. Image builds need access to public registries
+and package repositories. The client host needs no GPU.
 
 ```bash
 git clone https://github.com/thinking-machines-lab/inkling-vendor-verifier.git
@@ -102,7 +103,7 @@ Limited runs are marked `full_dataset: false`. Resume an interrupted run by
 repeating the identical command with `--resume`: completed cases are reused,
 failed cases restart from their first request, and prior attempts are retained.
 Dataset, selected cases, candidate/judge configuration, generation settings,
-DeepSWE network access and concurrency must match. Code, SDK versions and
+MMMU-Pro tool mode, DeepSWE network access and concurrency must match. Code, SDK versions and
 environment headers are not compared; use a new output directory when changing
 them could affect results.
 Only one process may use an output directory at a time.
@@ -122,6 +123,10 @@ Output budgets use reported output usage, including reasoning where reported;
 prompt and tool-result tokens do not consume them. They are not context limits.
 No common random seed, identical tokenization or bitwise output parity across
 protocols is assumed.
+
+With `mmmu_pro.py run --with-tools`, defaults change to 524,288 output tokens
+across the entire conversation and concurrency 4, with at most 131,072 output
+tokens per turn. The table above describes MMMU-Pro without tools.
 
 Use `--temperature none --top-p none` to omit sampling controls.
 `--reasoning-effort default` omits reasoning controls; `none` disables reasoning.
@@ -151,6 +156,38 @@ validation require the complete judgment schema, including `"strict": true`.
 Malformed, refused or truncated judgments fail the run, not the answer's score.
 Both stages' settings, requests and usage are recorded; changing the judge
 invalidates resume. Compare whole-run HLE timing, including judgment.
+
+### MMMU-Pro image tools
+
+Add `--with-tools` to any MMMU-Pro subset to enable one persistent `ipython` tool:
+
+```bash
+python mmmu_pro.py run --with-tools --subset vision \
+  --api openai-responses --model MODEL --base-url https://VENDOR/v1 \
+  --output results/mmmu-tools --limit 2 --concurrency 1
+```
+
+Each question gets a fresh offline container. Original question images are
+available under `/sandbox/images/`, with paths included beside the images in the
+prompt. Python variables and imports persist between calls; `display(...)`, PIL
+images and matplotlib plots return inline images. The sandbox includes NumPy,
+SciPy, pandas, SymPy, scikit-learn, scikit-image, OpenCV, Shapely and Tesseract.
+This mode adds image-analysis instructions while retaining the subset's question
+prompt and answer grading. Tools remain optional for the model; their use is
+recorded per question. Prepared data is shared with no-tools runs.
+
+Tool results carry images directly on Anthropic. For compatibility with current
+serving APIs, Chat Completions and Responses attach images in a follow-up user
+message labeled with the tool-call ID, after all tool results in that turn.
+
+Limits are 128 turns and 128 tool calls per question, 60 seconds per Python call,
+16 KiB of output text per stream, and eight displayed images per call (8,192
+pixels per side and 32 MiB of PNG data combined). Each container requests 8 GiB
+RAM and two CPUs. Images are built once and cached; builds need internet, but
+model-executed Python always runs with networking disabled. No host directories,
+API credentials or container sockets are mounted into the sandbox. Containers
+are removed on exit; the built image remains. Start with concurrency 1 on a new
+host and increase it to fit available memory.
 
 ### Needle-in-a-haystack
 
@@ -184,7 +221,7 @@ Containers receive at least 8 GiB RAM, so size concurrency for the host and budg
 space for images and builds.
 
 The solver and grader default to Docker `--network none`, with no internet
-access or proxy. Add `--allow-network` to `python deepswe.py run ...` to enable
+access or proxy. Add `--with-network` to `python deepswe.py run ...` to enable
 network access for **both** through Docker's bridge network. This overrides the
 upstream offline policy and is recorded in results and resume settings.
 The model API client runs outside the sandbox and sends tool commands into it.

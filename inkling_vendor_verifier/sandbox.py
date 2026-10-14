@@ -1,4 +1,4 @@
-"""Docker execution for pinned DeepSWE tasks."""
+"""Container execution and grading for pinned DeepSWE tasks."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import tomllib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 from inkling_vendor_verifier.deepswe_images import dockerfile as deepswe_dockerfile
 
@@ -147,16 +147,12 @@ def task_config(task: Path) -> dict[str, Any]:
     return config
 
 
-class DockerSandbox:
-    def __init__(self, task: Path, work_dir: Path, *, allow_network: bool = False):
-        self.task = task
+class Container:
+    def __init__(self, work_dir: Path, *, allow_network: bool = False):
         self.work_dir = work_dir
         self.allow_network = allow_network
-        self.config = task_config(task)
         self.name = "inkling-eval-" + uuid.uuid4().hex
         self._created: list[str] = []
-        self.base_commit: str | None = None
-        self.solver_image: str | None = None
 
     async def _docker(self, *args: str, **kwargs: Any) -> CommandResult:
         result = await command("docker", *args, **kwargs)
@@ -164,8 +160,9 @@ class DockerSandbox:
             raise RuntimeError(f"Docker {' '.join(args[:3])} failed: {result.stderr}")
         return result
 
-    async def __aenter__(self) -> DockerSandbox:
+    async def __aenter__(self) -> Self:
         try:
+            self.work_dir.mkdir(parents=True, exist_ok=True)
             await self.start()
         except BaseException:
             await self.close()
@@ -176,42 +173,7 @@ class DockerSandbox:
         await self.close()
 
     async def start(self) -> None:
-        self.work_dir.mkdir(parents=True, exist_ok=True)
-        environment = self.config["environment"]
-        image = await self._image(self.task / "environment", environment)
-        self.solver_image = image
-        await self._start_container(image, environment)
-        baseline = await self.run("git rev-parse HEAD", timeout=60)
-        if baseline.exit_code or not re.fullmatch(
-            r"[0-9a-f]{40}|[0-9a-f]{64}", baseline.stdout.strip()
-        ):
-            raise RuntimeError("Task environment must start in a checked-out git repository")
-        self.base_commit = baseline.stdout.strip()
-
-    async def _image(
-        self, context: Path, environment: dict[str, Any], solver_image: str | None = None
-    ) -> str:
-        digest = hashlib.sha256()
-        for path in sorted(context.rglob("*")):
-            if path.is_file():
-                digest.update(str(path.relative_to(context)).encode() + b"\0" + path.read_bytes())
-        recipe = deepswe_dockerfile((context / "Dockerfile").read_text(), solver_image)
-        dockerfile = self.work_dir / f"{context.name}.Dockerfile"
-        dockerfile.write_text(recipe)
-        digest.update(recipe.encode())
-        image = "inkling-verifier-task:" + digest.hexdigest()
-        result = await self._docker(
-            "build",
-            "--tag",
-            image,
-            "--file",
-            str(dockerfile),
-            str(context),
-            timeout=float(environment.get("build_timeout_sec", 1800)),
-        )
-        log = "verifier-build.log" if context.name == "tests" else "build.log"
-        (self.work_dir / log).write_text(result.stdout + result.stderr)
-        return image
+        raise NotImplementedError
 
     async def _start_container(self, image: str, environment: dict[str, Any]) -> None:
         await self._docker(
@@ -276,6 +238,52 @@ class DockerSandbox:
             timeout=timeout + 30,
             output_limit=output_limit,
         )
+
+
+class DockerSandbox(Container):
+    def __init__(self, task: Path, work_dir: Path, *, allow_network: bool = False):
+        super().__init__(work_dir, allow_network=allow_network)
+        self.task = task
+        self.config = task_config(task)
+        self.base_commit: str | None = None
+        self.solver_image: str | None = None
+
+    async def start(self) -> None:
+        environment = self.config["environment"]
+        image = await self._image(self.task / "environment", environment)
+        self.solver_image = image
+        await self._start_container(image, environment)
+        baseline = await self.run("git rev-parse HEAD", timeout=60)
+        if baseline.exit_code or not re.fullmatch(
+            r"[0-9a-f]{40}|[0-9a-f]{64}", baseline.stdout.strip()
+        ):
+            raise RuntimeError("Task environment must start in a checked-out git repository")
+        self.base_commit = baseline.stdout.strip()
+
+    async def _image(
+        self, context: Path, environment: dict[str, Any], solver_image: str | None = None
+    ) -> str:
+        digest = hashlib.sha256()
+        for path in sorted(context.rglob("*")):
+            if path.is_file():
+                digest.update(str(path.relative_to(context)).encode() + b"\0" + path.read_bytes())
+        recipe = deepswe_dockerfile((context / "Dockerfile").read_text(), solver_image)
+        dockerfile = self.work_dir / f"{context.name}.Dockerfile"
+        dockerfile.write_text(recipe)
+        digest.update(recipe.encode())
+        image = "inkling-verifier-task:" + digest.hexdigest()
+        result = await self._docker(
+            "build",
+            "--tag",
+            image,
+            "--file",
+            str(dockerfile),
+            str(context),
+            timeout=float(environment.get("build_timeout_sec", 1800)),
+        )
+        log = "verifier-build.log" if context.name == "tests" else "build.log"
+        (self.work_dir / log).write_text(result.stdout + result.stderr)
+        return image
 
     async def grade(self) -> tuple[float, dict[str, Any]]:
         await self._docker("restart", self.name)
