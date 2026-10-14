@@ -84,6 +84,7 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
         assert args.limit is None
         if module is hle:
             assert args.reasoning_effort == "max"
+            assert args.max_output_tokens == 262144
         if module is niah:
             assert (
                 args.max_output_tokens,

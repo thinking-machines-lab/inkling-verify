@@ -239,7 +239,7 @@ def judge_settings(args: argparse.Namespace) -> tuple[argparse.Namespace | None,
 
 def main() -> None:
     root, _, run_parser = parser("HLE without tools")
-    run_parser.set_defaults(reasoning_effort="max")
+    run_parser.set_defaults(reasoning_effort="max", max_output_tokens=262144)
     add_api_arguments(run_parser, prefix="judge-")
     run_parser.add_argument("--judge-max-output-tokens", type=positive, default=32768)
     run_parser.add_argument(

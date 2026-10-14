@@ -121,7 +121,7 @@ Only one process may use an output directory at a time.
 
 | Default | SWE-bench / DeepSWE | MMMU-Pro | HLE candidate | NIAH |
 | --- | --- | --- | --- | --- |
-| Output tokens | 262,144 per tool trajectory | 131,072 | 131,072 | 128 |
+| Output tokens | 262,144 per tool trajectory | 131,072 | 262,144 | 128 |
 | Temperature / top-p | 1 / 1 | 1 / 1 | 1 / 1 | 0 / omitted |
 | Reasoning effort | high | high | max (0.99 for Inkling) | none |
 | Concurrency | 32 | 64 | 64 | 4 |
