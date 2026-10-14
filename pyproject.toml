@@ -20,7 +20,6 @@ include = ["inkling_verify*"]
 
 [tool.setuptools.package-data]
 "inkling_verify" = ["python-tools.Dockerfile", "deepswe_images.json"]
-"inkling_verify.benchmarks" = ["task_bundles.json"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

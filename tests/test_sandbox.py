@@ -7,7 +7,7 @@ import pytest
 
 from inkling_verify import deepswe_images
 from inkling_verify import sandbox as module
-from inkling_verify.benchmarks.task_bundles import release
+from inkling_verify.benchmarks.deepswe_data import MANIFEST
 from inkling_verify.deepswe_images import (
     IMAGE_MANIFEST_SHA256,
     PLATFORM,
@@ -201,10 +201,10 @@ def test_deepswe_rejects_unexpected_verifier_image_stages(source):
         verifier_dockerfile(source, "inkling-verify-task:123")
 
 
-def test_deepswe_image_pins_cover_the_release_and_have_a_resume_identity():
+def test_deepswe_image_pins_cover_the_upstream_revision_and_have_a_resume_identity():
     raw = Path(deepswe_images.__file__).with_suffix(".json").read_bytes()
     manifest = json.loads(raw)
-    assert manifest["task_manifest_sha256"] == release()["manifest_sha256"]
+    assert manifest["source_revision"] == MANIFEST["revision"]
     assert len(manifest["images"]) == 113
     assert IMAGE_MANIFEST_SHA256 == hashlib.sha256(raw).hexdigest()
     assert PLATFORM == "linux/amd64"

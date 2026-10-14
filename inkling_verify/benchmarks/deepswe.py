@@ -8,7 +8,7 @@ from dataclasses import asdict
 from functools import partial
 from pathlib import Path
 
-from inkling_verify.benchmarks import task_bundles
+from inkling_verify.benchmarks import deepswe_data
 from inkling_verify.cli import evaluate, parser
 from inkling_verify.deepswe_images import IMAGE_MANIFEST_SHA256
 from inkling_verify.sandbox import DockerSandbox
@@ -78,10 +78,10 @@ class DeepSWE:
         self.allow_network = allow_network
 
     def prepare(self, data_dir: Path) -> Path:
-        return task_bundles.prepare(data_dir)
+        return deepswe_data.prepare(data_dir)
 
     def load(self, data_dir: Path) -> list[Example]:
-        return task_bundles.load(data_dir)
+        return deepswe_data.load(data_dir)
 
     async def evaluate(
         self,
