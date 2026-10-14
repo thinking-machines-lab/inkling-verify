@@ -11,7 +11,7 @@ from pathlib import Path
 from inkling_verify.benchmarks import deepswe_data
 from inkling_verify.cli import evaluate, parser
 from inkling_verify.deepswe_images import IMAGE_MANIFEST_SHA256
-from inkling_verify.sandbox import DockerSandbox
+from inkling_verify.sandbox import DeepSWESandbox
 from inkling_verify.tool_loop import run_tools
 from inkling_verify.types import (
     Evaluation,
@@ -50,7 +50,7 @@ def bash_tool(*, allow_network: bool = False) -> Tool:
     )
 
 
-async def run_bash(sandbox: DockerSandbox, arguments: str) -> tuple[Text, ...]:
+async def run_bash(sandbox: DeepSWESandbox, arguments: str) -> tuple[Text, ...]:
     try:
         args = json.loads(arguments)
         if not isinstance(args, dict) or args.keys() - {"command", "workdir", "timeout"}:
@@ -92,7 +92,7 @@ class DeepSWE:
         *,
         judge: Provider | None = None,
     ) -> Evaluation:
-        async with DockerSandbox(
+        async with DeepSWESandbox(
             Path(example.metadata["task_dir"]), work_dir, allow_network=self.allow_network
         ) as sandbox:
             answer, details = await run_tools(

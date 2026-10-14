@@ -115,9 +115,9 @@ class PythonSandbox(Container):
         image = f"inkling-verify-python:{digest}"
         async with _IMAGE_BUILD_LOCK:
             if image not in _BUILT_IMAGES:
-                cached = await self._docker("image", "ls", "--quiet", image)
+                cached = await self._podman("image", "ls", "--quiet", image)
                 if not cached.stdout.strip():
-                    result = await self._docker(
+                    result = await self._podman(
                         "build", "--tag", image, "--file", str(recipe), str(directory)
                     )
                     (self.work_dir / "python-build.log").write_text(result.stdout + result.stderr)
@@ -128,7 +128,7 @@ class PythonSandbox(Container):
     async def _start_kernel(self) -> None:
         with (self.work_dir / "python-kernel.log").open("ab") as log:
             self._process = await asyncio.create_subprocess_exec(
-                "docker",
+                "podman",
                 "exec",
                 "-i",
                 self.name,
@@ -177,7 +177,7 @@ class PythonSandbox(Container):
                 source = directory / name
                 source.write_bytes(part.data)
                 destination = f"/sandbox/images/{name}"
-                await self._docker("cp", str(source), f"{self.name}:{destination}", timeout=60)
+                await self._podman("cp", str(source), f"{self.name}:{destination}", timeout=60)
                 content.append(Text(f"[Image: source: {destination}]"))
             prepared.append(replace(message, content=tuple(content)))
         return prepared
@@ -205,7 +205,7 @@ class PythonSandbox(Container):
                     await process.stdin.drain()
                     raw = await process.stdout.readline()
             except TimeoutError:
-                await self._docker("restart", self.name)
+                await self._podman("restart", self.name)
                 await self._reap_kernel()
                 await self._start_kernel()
                 return (

@@ -80,15 +80,21 @@ class Container:
         self.name = "inkling-verify-" + uuid.uuid4().hex
         self._created: list[str] = []
 
-    async def _docker(self, *args: str, **kwargs: Any) -> CommandResult:
-        result = await command("docker", *args, **kwargs)
+    async def _podman(self, *args: str, **kwargs: Any) -> CommandResult:
+        try:
+            result = await command("podman", *args, **kwargs)
+        except FileNotFoundError as error:
+            raise RuntimeError("Podman not found; install and configure rootless Podman") from error
         if result.exit_code:
-            raise RuntimeError(f"Docker {' '.join(args[:3])} failed: {result.stderr}")
+            raise RuntimeError(f"Podman {' '.join(args[:3])} failed: {result.stderr}")
         return result
 
     async def __aenter__(self) -> Self:
         try:
             self.work_dir.mkdir(parents=True, exist_ok=True)
+            info = await self._podman("info", "--format", "{{.Host.Security.Rootless}}", timeout=30)
+            if info.stdout.strip() != "true":
+                raise RuntimeError("Rootless Podman is required; configure a rootless connection")
             await self.start()
         except BaseException:
             await self.close()
@@ -104,7 +110,7 @@ class Container:
     async def _start_container(
         self, image: str, environment: dict[str, Any], *, platform: str | None = None
     ) -> None:
-        await self._docker(
+        await self._podman(
             "run",
             *(["--platform", platform] if platform else []),
             "--detach",
@@ -133,11 +139,11 @@ class Container:
         failures = []
         while self._created:
             name = self._created.pop()
-            result = await command("docker", "rm", "--force", name, timeout=60)
+            result = await command("podman", "rm", "--force", name, timeout=60)
             if result.exit_code:
                 failures.append(result.stderr)
         if failures:
-            raise RuntimeError("Docker cleanup failed: " + "\n".join(failures))
+            raise RuntimeError("Podman cleanup failed: " + "\n".join(failures))
 
     async def run(
         self,
@@ -154,7 +160,7 @@ class Container:
         if workdir is not None:
             flags.extend(("--workdir", workdir))
         return await command(
-            "docker",
+            "podman",
             "exec",
             *flags,
             self.name,
@@ -170,7 +176,7 @@ class Container:
         )
 
 
-class DockerSandbox(Container):
+class DeepSWESandbox(Container):
     def __init__(self, task: Path, work_dir: Path, *, allow_network: bool = False):
         super().__init__(work_dir, allow_network=allow_network)
         self.task = task
@@ -185,7 +191,7 @@ class DockerSandbox(Container):
         await self._start_container(self.solver_image, environment, platform=PLATFORM)
         logs = self.work_dir / "logs"
         (logs / "artifacts").mkdir(parents=True)
-        await self._docker("cp", str(logs), self.name + ":/")
+        await self._podman("cp", str(logs), self.name + ":/")
         baseline = await self.run("git rev-parse HEAD", timeout=60)
         if baseline.exit_code or not re.fullmatch(
             r"[0-9a-f]{40}|[0-9a-f]{64}", baseline.stdout.strip()
@@ -206,7 +212,7 @@ class DockerSandbox(Container):
         dockerfile.write_text(recipe)
         digest.update(recipe.encode())
         image = "inkling-verify-task:" + digest.hexdigest()
-        result = await self._docker(
+        result = await self._podman(
             "build",
             "--platform",
             PLATFORM,
@@ -222,7 +228,7 @@ class DockerSandbox(Container):
         return image
 
     async def grade(self) -> tuple[float, dict[str, Any]]:
-        await self._docker("restart", self.name)
+        await self._podman("restart", self.name)
         assert self.base_commit is not None
         patch = await self._separate_verifier()
         verifier = self.config["verifier"]
@@ -235,7 +241,7 @@ class DockerSandbox(Container):
         )
         (self.work_dir / "verifier.stdout").write_text(test.stdout)
         (self.work_dir / "verifier.stderr").write_text(test.stderr)
-        await self._docker("cp", self.name + ":/logs/verifier", str(self.work_dir / "verifier"))
+        await self._podman("cp", self.name + ":/logs/verifier", str(self.work_dir / "verifier"))
         reward = parse_reward(self.work_dir / "verifier")
         return reward, {
             "verifier_exit_code": test.exit_code,
@@ -252,16 +258,16 @@ class DockerSandbox(Container):
         if patch.exit_code:
             raise RuntimeError(f"DeepSWE patch collection failed: {patch.stderr}")
         candidate = self.work_dir / "candidate.patch"
-        await self._docker("cp", self.name + ":/logs/artifacts/model.patch", str(candidate))
+        await self._podman("cp", self.name + ":/logs/artifacts/model.patch", str(candidate))
         if candidate.is_symlink() or not candidate.is_file():
             raise RuntimeError("DeepSWE patch collection must produce a regular file")
-        await self._docker("rm", "--force", self.name)
+        await self._podman("rm", "--force", self.name)
         self._created.remove(self.name)
         self.name += "-verifier"
         image = await self._verifier_image()
         await self._start_container(image, verifier["environment"], platform=PLATFORM)
-        await self._docker("cp", str(self.work_dir / "logs"), self.name + ":/")
-        await self._docker("cp", str(candidate), self.name + ":/logs/artifacts/model.patch")
+        await self._podman("cp", str(self.work_dir / "logs"), self.name + ":/")
+        await self._podman("cp", str(candidate), self.name + ":/logs/artifacts/model.patch")
         return patch
 
 

@@ -2,6 +2,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -14,9 +15,10 @@ from inkling_verify.deepswe_images import (
     solver_image,
     verifier_dockerfile,
 )
+from inkling_verify.python_tools import PythonSandbox
 from inkling_verify.sandbox import (
     CommandResult,
-    DockerSandbox,
+    DeepSWESandbox,
     command,
     parse_reward,
 )
@@ -71,13 +73,65 @@ timeout_sec = 300
     return task
 
 
+@pytest.fixture(params=["deepswe", "python"])
+def sandbox(request, deepswe_task, tmp_path):
+    if request.param == "deepswe":
+        return DeepSWESandbox(deepswe_task, tmp_path / "result")
+    return PythonSandbox(tmp_path / "result")
+
+
+@pytest.mark.parametrize("reported_rootless", ["false\n", "", "unknown\n"])
+async def test_sandboxes_reject_non_rootless_podman_before_start(
+    sandbox, reported_rootless, monkeypatch
+):
+    podman = AsyncMock(return_value=CommandResult(reported_rootless, "", 0, 0))
+    monkeypatch.setattr(module, "command", podman)
+    sandbox.start = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="Rootless Podman is required"):
+        async with sandbox:
+            pytest.fail("A non-rootless engine must not start a sandbox")
+
+    sandbox.start.assert_not_awaited()
+    podman.assert_awaited_once_with(
+        "podman", "info", "--format", "{{.Host.Security.Rootless}}", timeout=30
+    )
+
+
+async def test_sandboxes_start_after_confirming_rootless_podman(sandbox, monkeypatch):
+    podman = AsyncMock(return_value=CommandResult("true\n", "", 0, 0))
+    monkeypatch.setattr(module, "command", podman)
+
+    async def start():
+        podman.assert_awaited_once_with(
+            "podman", "info", "--format", "{{.Host.Security.Rootless}}", timeout=30
+        )
+
+    sandbox.start = AsyncMock(side_effect=start)
+    async with sandbox as started:
+        assert started is sandbox
+        sandbox.start.assert_awaited_once_with()
+
+
+async def test_missing_podman_reports_setup_error_before_start(sandbox, monkeypatch):
+    podman = AsyncMock(side_effect=FileNotFoundError(2, "No such file or directory", "podman"))
+    monkeypatch.setattr(module, "command", podman)
+    sandbox.start = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="Podman.*not found"):
+        async with sandbox:
+            pytest.fail("A missing engine must not start a sandbox")
+
+    sandbox.start.assert_not_awaited()
+
+
 @pytest.mark.parametrize("memory", ["0", "-1", "true", '"8192"'])
 @pytest.mark.parametrize("original", ["8192", "12288"])
 def test_deepswe_rejects_invalid_resource_limits(deepswe_task, memory, original):
     path = deepswe_task / "task.toml"
     path.write_text(path.read_text().replace(f"memory_mb = {original}", f"memory_mb = {memory}"))
     with pytest.raises(ValueError, match="memory_mb must be a positive integer"):
-        DockerSandbox(deepswe_task, deepswe_task / "result")
+        DeepSWESandbox(deepswe_task, deepswe_task / "result")
 
 
 @pytest.mark.parametrize("failure", [None, "collect", "verifier-build", "patch-symlink"])
@@ -87,12 +141,14 @@ async def test_deepswe_isolates_solver_and_verifier(
 ):
     work = tmp_path / "result"
     calls = []
-    sandbox = DockerSandbox(deepswe_task, work, allow_network=allow_network)
+    sandbox = DeepSWESandbox(deepswe_task, work, allow_network=allow_network)
     hook = sandbox.config["verifier"]["collect"][0]["command"]
     patch_bytes = b"binary patch\x00\xff"
 
-    async def docker(*args, **kwargs):
+    async def podman(*args, **kwargs):
         calls.append(args)
+        if args[1] == "info":
+            return CommandResult("true\n", "", 0, 0.1)
         if args[-1] == "git rev-parse HEAD":
             return CommandResult("a" * 40, "", 0, 0.1)
         if (failure == "collect" and args[-1] == hook) or (
@@ -112,7 +168,7 @@ async def test_deepswe_isolates_solver_and_verifier(
             (work / "verifier/reward.json").write_text('{"reward": 1}')
         return CommandResult("", "", 0, 0.1)
 
-    monkeypatch.setattr(module, "command", docker)
+    monkeypatch.setattr(module, "command", podman)
     solver = sandbox.name
 
     async def evaluate():
@@ -120,7 +176,7 @@ async def test_deepswe_isolates_solver_and_verifier(
             assert not any(a[1] == "network" for a in calls)
             assert not any(a[1] == "build" for a in calls)
             assert (work / "logs/artifacts").is_dir()
-            assert ("docker", "cp", str(work / "logs"), solver + ":/") in calls
+            assert ("podman", "cp", str(work / "logs"), solver + ":/") in calls
             await sandbox.run("printf x", workdir="/app")
             assert ("--workdir", "/app") == calls[-1][2:4]
             assert calls[-1][-3:] == ("bash", "-lc", "printf x")
@@ -143,7 +199,7 @@ async def test_deepswe_isolates_solver_and_verifier(
         )
         assert (deepswe_task / "tests/Dockerfile").read_text().startswith("FROM fixture:solver\n")
         assert "--cpus=3" in runs[1] and "--memory=12288m" in runs[1]
-        remove = calls.index(("docker", "rm", "--force", solver))
+        remove = calls.index(("podman", "rm", "--force", solver))
         assert remove < calls.index(runs[1])
         assert any(a[1] == "build" and a[-1] == str(deepswe_task / "tests") for a in calls)
         copies = [a[2:] for a in calls if a[1] == "cp"]
@@ -167,7 +223,7 @@ async def test_deepswe_isolates_solver_and_verifier(
         assert "TERM=xterm-256color" in args
         assert not any(flag.startswith(("--mount", "--volume", "--privileged")) for flag in args)
         name = args[args.index("--name") + 1]
-        assert ("docker", "rm", "--force", name) in calls
+        assert ("podman", "rm", "--force", name) in calls
     if not failure:
         grading = next(a for a in calls if a[-1].endswith("bash /tests/test.sh"))
         assert grading[-3:-1] == ("bash", "-c")
@@ -186,7 +242,7 @@ async def test_verifier_shell_preserves_image_virtualenv_path(tmp_path, monkeypa
     container = module.Container(tmp_path)
 
     async def local_exec(*args, **kwargs):
-        assert args[:3] == ("docker", "exec", container.name)
+        assert args[:3] == ("podman", "exec", container.name)
         return await command(*args[3:], **kwargs)
 
     monkeypatch.setattr(module, "command", local_exec)
@@ -215,21 +271,23 @@ async def test_deepswe_rejects_unpinned_images_without_building(deepswe_task, mo
     path = deepswe_task / "task.toml"
     path.write_text(path.read_text().replace(UPSTREAM_IMAGE, "unlisted:image"))
 
-    async def unexpected_docker(*args, **kwargs):
+    async def unexpected_podman(*args, **kwargs):
         pytest.fail("Unpinned images must not reach the container engine")
 
-    monkeypatch.setattr(module, "command", unexpected_docker)
+    monkeypatch.setattr(module, "command", unexpected_podman)
     with pytest.raises(ValueError, match="No pinned DeepSWE image"):
-        async with DockerSandbox(deepswe_task, deepswe_task / "result"):
+        async with DeepSWESandbox(deepswe_task, deepswe_task / "result"):
             pytest.fail("unexpected unpinned image")
 
 
 async def test_deepswe_checks_pinned_image_base_commit(deepswe_task, monkeypatch):
-    async def docker(*args, **kwargs):
+    async def podman(*args, **kwargs):
+        if args[1] == "info":
+            return CommandResult("true\n", "", 0, 0)
         return CommandResult("b" * 40 if args[-1] == "git rev-parse HEAD" else "", "", 0, 0)
 
-    monkeypatch.setattr(module, "command", docker)
-    sandbox = DockerSandbox(deepswe_task, deepswe_task / "result")
+    monkeypatch.setattr(module, "command", podman)
+    sandbox = DeepSWESandbox(deepswe_task, deepswe_task / "result")
     with pytest.raises(RuntimeError, match="does not match the task's base commit"):
         async with sandbox:
             pytest.fail("unexpected mismatched image")
@@ -239,11 +297,11 @@ async def test_deepswe_checks_pinned_image_base_commit(deepswe_task, monkeypatch
 async def test_image_tools_container_uses_native_platform(tmp_path, monkeypatch):
     calls = []
 
-    async def docker(*args, **kwargs):
+    async def podman(*args, **kwargs):
         calls.append(args)
         return CommandResult("", "", 0, 0)
 
-    monkeypatch.setattr(module, "command", docker)
+    monkeypatch.setattr(module, "command", podman)
     sandbox = module.Container(tmp_path)
     await sandbox._start_container("python-tools:image", {"memory_mb": 8192})
     assert "--platform" not in calls[0]
@@ -252,12 +310,12 @@ async def test_image_tools_container_uses_native_platform(tmp_path, monkeypatch)
 async def test_deepswe_verifier_cache_includes_solver_image(deepswe_task, tmp_path, monkeypatch):
     calls = []
 
-    async def docker(*args, **kwargs):
+    async def podman(*args, **kwargs):
         calls.append(args)
         return CommandResult("", "", 0, 0.1)
 
-    monkeypatch.setattr(module, "command", docker)
-    sandbox = DockerSandbox(deepswe_task, tmp_path)
+    monkeypatch.setattr(module, "command", podman)
+    sandbox = DeepSWESandbox(deepswe_task, tmp_path)
     sandbox.solver_image = "solver:first"
     first = await sandbox._verifier_image()
     sandbox.solver_image = "solver:second"

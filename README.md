@@ -6,7 +6,13 @@ Supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages endpo
 ## Installation
 
 Requires Python 3.12+ on Linux or macOS. DeepSWE and MMMU-Pro with tools also require
-Docker or a compatible Podman `docker` command, on ARM64 or x86-64.
+[rootless Podman](https://podman.io/docs/installation). On macOS, run
+`podman machine init` and `podman machine start` after installation. Check that
+`podman info --format '{{.Host.Security.Rootless}}'` prints `true`.
+
+MMMU tools run natively on ARM64 and x86-64. DeepSWE uses pinned x86-64 images;
+running it on ARM requires x86 emulation configured in the container host
+(QEMU/binfmt on Linux or Rosetta in the Podman VM on Apple Silicon).
 
 ```bash
 git clone https://github.com/thinking-machines-lab/inkling-verify.git

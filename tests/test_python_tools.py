@@ -92,7 +92,7 @@ def test_kernel_protocol_preserves_state_images_and_recovers_from_cell_failures(
 @pytest.mark.parametrize("format,suffix", [("PNG", "png"), ("JPEG", "jpg")])
 async def test_stage_preserves_original_bytes_and_interleaves_path_hints(tmp_path, format, suffix):
     sandbox = PythonSandbox(tmp_path)
-    sandbox._docker = AsyncMock()
+    sandbox._podman = AsyncMock()
     image = Image(encoded_image(format), f"image/{suffix}")
     messages = [Message("user", (Text("before"), image, Text("after"), image))]
     staged = await sandbox.stage(messages)
@@ -111,7 +111,7 @@ async def test_stage_preserves_original_bytes_and_interleaves_path_hints(tmp_pat
     ]
     assert messages[0].content == (Text("before"), image, Text("after"), image)
     assert not sandbox.allow_network
-    for index, call in enumerate(sandbox._docker.await_args_list):
+    for index, call in enumerate(sandbox._podman.await_args_list):
         local = tmp_path / "images" / f"image_{index}.{suffix}"
         assert local.read_bytes() == image.data
         assert call.args == ("cp", str(local), f"{sandbox.name}:/sandbox/images/{local.name}")
@@ -177,12 +177,12 @@ async def test_concurrent_questions_build_the_python_image_once(tmp_path, monkey
     monkeypatch.setattr(python_tools, "_IMAGE_BUILD_LOCK", asyncio.Lock())
     calls = []
 
-    async def docker(self, *args):
+    async def podman(self, *args):
         calls.append(args)
         await asyncio.sleep(0)
         return CommandResult("", "", 0, 0)
 
-    monkeypatch.setattr(PythonSandbox, "_docker", docker)
+    monkeypatch.setattr(PythonSandbox, "_podman", podman)
     monkeypatch.setattr(PythonSandbox, "_start_container", AsyncMock())
     monkeypatch.setattr(PythonSandbox, "_start_kernel", AsyncMock())
     await asyncio.gather(PythonSandbox(tmp_path).start(), PythonSandbox(tmp_path).start())
@@ -207,7 +207,7 @@ async def test_sigsegv_restarts_kernel_reports_lost_state_and_allows_next_cell(t
     sandbox._process.stdout.readline = AsyncMock(return_value=b"")
     sandbox._process.wait = AsyncMock(return_value=139)
     sandbox._reap_kernel = AsyncMock()
-    sandbox._docker = AsyncMock()
+    sandbox._podman = AsyncMock()
 
     async def start_kernel():
         assert sandbox._lock.locked()
@@ -227,7 +227,7 @@ async def test_sigsegv_restarts_kernel_reports_lost_state_and_allows_next_cell(t
     }
     sandbox._reap_kernel.assert_awaited_once_with()
     sandbox._start_kernel.assert_awaited_once_with()
-    sandbox._docker.assert_not_awaited()
+    sandbox._podman.assert_not_awaited()
     assert await sandbox.execute('{"code":"6 * 7"}') == (Text("42"),)
 
 
@@ -262,20 +262,20 @@ async def test_wedged_kernel_restarts_container_and_reports_lost_state(tmp_path)
     sandbox = PythonSandbox(tmp_path)
     kernel_reply(sandbox)
     sandbox._process.stdout.readline = AsyncMock(side_effect=TimeoutError)
-    sandbox._docker = AsyncMock()
+    sandbox._podman = AsyncMock()
     sandbox._reap_kernel = AsyncMock()
     sandbox._start_kernel = AsyncMock()
     result = await sandbox.execute('{"code":"blocking_native_call()", "timeout": 1}')
     assert "in-memory state (variables, imports) was lost" in result[0].text
-    sandbox._docker.assert_awaited_once_with("restart", sandbox.name)
+    sandbox._podman.assert_awaited_once_with("restart", sandbox.name)
     sandbox._reap_kernel.assert_awaited_once_with()
     sandbox._start_kernel.assert_awaited_once_with()
 
 
 async def test_cleanup_reaps_kernel_when_container_cleanup_fails(tmp_path, monkeypatch):
     sandbox = PythonSandbox(tmp_path)
-    monkeypatch.setattr(Container, "close", AsyncMock(side_effect=RuntimeError("docker failed")))
+    monkeypatch.setattr(Container, "close", AsyncMock(side_effect=RuntimeError("podman failed")))
     sandbox._reap_kernel = AsyncMock()
-    with pytest.raises(RuntimeError, match="docker failed"):
+    with pytest.raises(RuntimeError, match="podman failed"):
         await sandbox.close()
     sandbox._reap_kernel.assert_awaited_once_with()

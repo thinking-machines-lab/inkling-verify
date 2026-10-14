@@ -549,7 +549,7 @@ async def test_mmmu_tools_multi_turn_images_scoring_and_resume(
     class PythonSandbox(python_tools.PythonSandbox):
         async def __aenter__(self):
             self.work_dir.mkdir(parents=True, exist_ok=True)
-            self._docker = AsyncMock()
+            self._podman = AsyncMock()
             return self
 
         async def __aexit__(self, *args):

@@ -40,7 +40,7 @@ def code_sandbox(monkeypatch):
         sandbox.allow_network = allow_network
         return sandbox
 
-    monkeypatch.setattr(deepswe, "DockerSandbox", create)
+    monkeypatch.setattr(deepswe, "DeepSWESandbox", create)
     return sandbox
 
 
