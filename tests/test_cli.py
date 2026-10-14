@@ -7,7 +7,7 @@ from dataclasses import asdict, replace
 import pytest
 
 from inkling_vendor_verifier import cli
-from inkling_vendor_verifier.benchmarks import deepswe, niah
+from inkling_vendor_verifier.benchmarks import deepswe, mmau, niah
 from inkling_vendor_verifier.benchmarks import hle_no_tools as hle
 from inkling_vendor_verifier.benchmarks import mmmu_pro as mmmu
 from inkling_vendor_verifier.types import Example, Generation
@@ -19,11 +19,20 @@ BENCHMARKS = (
     (mmmu, mmmu.MMMUPro, "standard-4"),
     (mmmu, mmmu.MMMUPro, "standard-10"),
     (deepswe, deepswe.DeepSWE, None),
+    (mmau, mmau.MMAU, None),
+    *((mmau, mmau.MMAU, subset) for subset in ("all", *mmau.TASKS)),
 )
 
 
-@pytest.mark.parametrize("module,benchmark_type,subset", BENCHMARKS)
-@pytest.mark.parametrize("command,effort", [("prepare", None), ("run", None), ("run", "low")])
+@pytest.mark.parametrize(
+    "module,benchmark_type,subset,command,effort",
+    [
+        (module, benchmark_type, subset, command, effort)
+        for module, benchmark_type, subset in BENCHMARKS
+        for command, effort in (("prepare", None), ("run", None), ("run", "low"))
+        if command == "run" or module is not mmau or subset is None
+    ],
+)
 def test_benchmark_entrypoint_dispatches_prepare_and_run(
     monkeypatch, tmp_path, module, benchmark_type, subset, command, effort
 ):
@@ -47,11 +56,12 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
         monkeypatch.setattr(niah, "write_grid", lambda output: None)
     monkeypatch.setattr(benchmark_type, "prepare", prepare)
     expected_name = (benchmark_type() if subset is None else benchmark_type(subset)).name
+    api = "openai-completions" if module is mmau else "anthropic"
     argv = ["benchmark.py", command, "--data-dir", "prepared"]
     if subset is not None:
         argv.extend(["--subset", subset])
     if command == "run":
-        argv.extend(["--api", "anthropic", "--model", "candidate", "--output", "results"])
+        argv.extend(["--api", api, "--model", "candidate", "--output", "results"])
         if effort is not None:
             argv.extend(["--reasoning-effort", effort])
     elif module is niah:
@@ -76,12 +86,14 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
         benchmark, args = captured["run"]
         assert isinstance(benchmark, benchmark_type)
         assert benchmark.name == expected_name
-        assert args.api == "anthropic"
+        assert args.api == api
         assert args.model == "candidate"
         assert args.data_dir.resolve() == tmp_path / "prepared"
         assert args.output.resolve() == tmp_path / "results"
         assert args.limit is None
         assert args.reasoning_effort == (effort or ("none" if module is niah else "max"))
+        if module is mmau:
+            assert args.max_output_tokens is None
         if module is deepswe:
             assert benchmark.allow_network is False
             assert args.max_output_tokens == 1_000_000
@@ -298,7 +310,7 @@ async def test_cli_records_dataset_and_endpoint_without_secrets_and_marks_smoke(
     assert generation.max_tokens == 123
 
 
-@pytest.mark.parametrize("module", [deepswe, hle, mmmu, niah])
+@pytest.mark.parametrize("module", [deepswe, hle, mmau, mmmu, niah])
 def test_only_deepswe_accepts_with_network(monkeypatch, module):
     async def evaluate(benchmark, args, **kwargs):
         assert isinstance(benchmark, deepswe.DeepSWE)
@@ -327,6 +339,19 @@ def test_only_deepswe_accepts_with_network(monkeypatch, module):
         with pytest.raises(SystemExit) as error:
             module.main()
         assert error.value.code == 2
+
+
+@pytest.mark.parametrize("api", ["openai-responses", "anthropic"])
+def test_mmau_rejects_unsupported_audio_apis(monkeypatch, capsys, api):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_mmau.py", "run", "--api", api, "--model", "m", "--output", "results"],
+    )
+    with pytest.raises(SystemExit) as error:
+        mmau.main()
+    assert error.value.code == 2
+    assert "audio-capable Chat Completions" in capsys.readouterr().err
 
 
 async def test_missing_api_key_fails_before_provider_creation(monkeypatch, evaluation):

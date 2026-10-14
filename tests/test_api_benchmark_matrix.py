@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
+import wave
 from contextlib import AsyncExitStack
 from functools import partial
 from unittest.mock import AsyncMock
@@ -13,7 +15,7 @@ import pytest
 from PIL import Image
 
 from inkling_vendor_verifier import python_tools
-from inkling_vendor_verifier.benchmarks import deepswe, niah
+from inkling_vendor_verifier.benchmarks import deepswe, mmau, niah
 from inkling_vendor_verifier.benchmarks import hle_no_tools as hle
 from inkling_vendor_verifier.benchmarks import mmmu_pro as mmmu
 from inkling_vendor_verifier.benchmarks.deepswe import DeepSWE
@@ -39,6 +41,78 @@ def user_text(body, api):
     if isinstance(content, str):
         return content
     return "".join(part["text"] for part in content if "text" in part)
+
+
+@pytest.fixture
+def mmau_example(tmp_path):
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(b"\x00\x00\x00\x40\x00\xc0")
+    wav = buffer.getvalue()
+    path = tmp_path / "sample.wav"
+    path.write_bytes(wav)
+    choices = ["dog barking", "cat meowing", "dog whining", "bird singing"]
+    return Example(
+        "audio-sample",
+        (Message("user", (Text(mmau.build_prompt("What is audible?", choices)),)),),
+        choices[0],
+        {
+            "task": "sound",
+            "choices": choices,
+            "audio_path": str(path),
+            "audio_sha256": hashlib.sha256(wav).hexdigest(),
+        },
+    ), wav
+
+
+@pytest.mark.parametrize("prediction, score", [("A dog is barking.", 1), ("cat meowing", 0)])
+async def test_mmau_chat_sends_exact_wav_and_scores_only_visible_text(
+    sdk_provider, reply, mmau_example, tmp_path, prediction, score
+):
+    example, wav = mmau_example
+    raw = reply("openai-completions", prediction)
+    raw["choices"][0]["message"]["reasoning_content"] = "cat meowing or dog barking"
+    provider, requests = sdk_provider("openai-completions", [raw])
+    async with provider:
+        result = await mmau.MMAU().evaluate(example, provider, GENERATION, tmp_path)
+        (tmp_path / "sample.wav").write_bytes(b"corrupted")
+        with pytest.raises(ValueError, match="Audio checksum mismatch"):
+            await mmau.MMAU().evaluate(example, provider, GENERATION, tmp_path)
+    assert result.score == score and result.answer == prediction
+    assert result.details["task"] == "sound"
+    assert len(requests) == 1
+    body = json.loads(requests[0].content)
+    assert body["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": example.messages[0].text},
+                {
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": base64.b64encode(wav).decode("ascii"),
+                        "format": "wav",
+                    },
+                },
+            ],
+        }
+    ]
+    assert "tools" not in body
+
+
+@pytest.mark.parametrize("api", ["openai-responses", "anthropic"])
+async def test_mmau_unsupported_audio_protocol_fails_before_http(
+    sdk_provider, mmau_example, tmp_path, api
+):
+    example, _ = mmau_example
+    provider, requests = sdk_provider(api, [])
+    async with provider:
+        with pytest.raises(ValueError, match="Audio input requires.*Chat Completions"):
+            await mmau.MMAU().evaluate(example, provider, GENERATION, tmp_path)
+    assert not requests
 
 
 @pytest.mark.parametrize("api", APIS)

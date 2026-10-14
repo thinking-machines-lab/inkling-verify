@@ -22,6 +22,11 @@ class Image:
 
 
 @dataclass(frozen=True)
+class Audio:
+    data: bytes
+
+
+@dataclass(frozen=True)
 class ToolCall:
     id: str
     name: str
@@ -31,7 +36,7 @@ class ToolCall:
 @dataclass(frozen=True)
 class Message:
     role: Literal["system", "user", "assistant", "tool"]
-    content: tuple[Text | Image, ...] = ()
+    content: tuple[Text | Image | Audio, ...] = ()
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
     native: dict[str, Any] | None = None

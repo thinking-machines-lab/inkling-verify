@@ -15,7 +15,7 @@ from openai import AsyncOpenAI
 from openai import BadRequestError as OpenAIBadRequestError
 
 from .context_limits import OUTPUT_TOKEN_FIELDS, remaining_output_tokens
-from .types import Api, Generation, Image, Message, Response, Text, Tool, ToolCall, Usage
+from .types import Api, Audio, Generation, Image, Message, Response, Text, Tool, ToolCall, Usage
 
 _APIS = get_args(Api)
 REQUEST_TIMEOUT_SECONDS = 12 * 3600
@@ -27,8 +27,8 @@ def _text(message: Message) -> str:
     return message.text
 
 
-def _encoded(image: Image) -> str:
-    return base64.b64encode(image.data).decode("ascii")
+def _encoded(media: Image | Audio) -> str:
+    return base64.b64encode(media.data).decode("ascii")
 
 
 def _data_uri(image: Image) -> str:
@@ -94,6 +94,11 @@ def _chat_messages(messages: Sequence[Message]) -> list[dict[str, Any]]:
             content = [
                 {"type": "text", "text": part.text}
                 if isinstance(part, Text)
+                else {
+                    "type": "input_audio",
+                    "input_audio": {"data": _encoded(part), "format": "wav"},
+                }
+                if isinstance(part, Audio)
                 else {"type": "image_url", "image_url": {"url": _data_uri(part)}}
                 for part in message.content
             ]
@@ -341,6 +346,9 @@ class APIProvider:
         tools: Sequence[Tool] = (),
         response_schema: dict[str, Any] | None = None,
     ) -> Response:
+        if any(isinstance(part, Audio) for message in messages for part in message.content):
+            if self.api != "openai-completions":
+                raise ValueError("Audio input requires an audio-capable Chat Completions endpoint")
         output_field = OUTPUT_TOKEN_FIELDS[self.api]
         request: dict[str, Any] = {"model": self.model, output_field: generation.max_tokens}
         if generation.temperature is not None:

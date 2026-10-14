@@ -50,6 +50,19 @@ python -m inkling_vendor_verifier.benchmarks.mmmu_pro run --subset vision --with
   --output results/mmmu-pro
 ```
 
+### MMAU
+
+1,000 audio multiple-choice questions covering sound, music, and speech. Requires
+an audio-capable Inkling model through Chat Completions. Use `--subset sound`,
+`music`, or `speech` to run one category.
+
+```bash
+python -m inkling_vendor_verifier.benchmarks.mmau prepare
+python -m inkling_vendor_verifier.benchmarks.mmau run \
+  --api openai-completions --model MODEL --base-url https://API_HOST/v1 \
+  --output results/mmau
+```
+
 ### HLE without tools
 
 2,158 text-only questions. The model judges its own answers by default;
