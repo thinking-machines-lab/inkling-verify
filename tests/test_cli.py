@@ -91,7 +91,7 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
 
 
 def test_deepswe_prepare_rejects_subsets(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["deepswe.py", "prepare", "--subset", "deepswe"])
+    monkeypatch.setattr(sys, "argv", ["run_deepswe.py", "prepare", "--subset", "deepswe"])
     with pytest.raises(SystemExit) as error:
         deepswe.main()
     assert error.value.code == 2
@@ -113,7 +113,7 @@ def test_mmmu_tools_defaults_and_overrides(monkeypatch, overrides):
         sys,
         "argv",
         [
-            "mmmu_pro.py",
+            "run_mmmu_pro.py",
             "run",
             "--with-tools",
             "--subset",
@@ -422,7 +422,7 @@ def test_hle_cli_resolves_judge_independently(
         sys,
         "argv",
         [
-            "hle_no_tools.py",
+            "run_hle_no_tools.py",
             "run",
             "--api",
             candidate_api,
@@ -459,7 +459,7 @@ def test_hle_cli_rejects_invalid_judge_top_p(monkeypatch, top_p):
         sys,
         "argv",
         [
-            "hle_no_tools.py",
+            "run_hle_no_tools.py",
             "run",
             "--api",
             "anthropic",
