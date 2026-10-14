@@ -53,7 +53,7 @@ class Generation:
     max_tokens: int
     temperature: float | None = 1.0
     top_p: float | None = 1.0
-    reasoning_effort: Literal["none", "low", "medium", "high", "max"] | None = "high"
+    reasoning_effort: Literal["none", "low", "medium", "high", "max"] | None = "max"
 
     def __post_init__(self) -> None:
         if self.max_tokens <= 0:

@@ -114,7 +114,7 @@ Only one process may use an output directory at a time.
 | --- | --- | --- | --- | --- |
 | Output tokens | 262,144 per tool trajectory | 131,072 | 262,144 | 4,096 |
 | Temperature / top-p | 1 / 1 | 1 / 1 | 1 / 1 | 0 / omitted |
-| Reasoning effort | high | high | max (0.99 for Inkling) | none |
+| Reasoning effort | max | max | max | none |
 | Concurrency | 32 | 64 | 64 | 4 |
 
 There is one sample per case. Override defaults with `--max-output-tokens`,
@@ -130,12 +130,13 @@ tokens per turn. The table above describes MMMU-Pro without tools.
 
 Use `--temperature none --top-p none` to omit sampling controls.
 `--reasoning-effort default` omits reasoning controls; `none` disables reasoning.
+For Inkling, `max` selects effort 0.99.
 Other Anthropic effort levels use adaptive thinking and `output_config.effort`.
 Unsupported settings fail explicitly instead of falling back.
 
 HLE judges each visible candidate answer in a fresh conversation, excluding
 separate reasoning. Default self-judging uses the candidate endpoint/model,
-32,768 output tokens, temperature 0, top-p 1 and reasoning disabled. Explicit
+32,768 output tokens, temperature 0, top-p 1 and `max` reasoning effort. Explicit
 candidate sampling omissions also apply to the default self-judge.
 
 ```bash

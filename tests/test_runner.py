@@ -194,7 +194,7 @@ async def test_completed_resume_makes_no_calls_and_has_zero_session_throughput(e
             "max_tokens": 100,
             "temperature": 1.0,
             "top_p": 1.0,
-            "reasoning_effort": "high",
+            "reasoning_effort": "max",
         },
         "concurrency": 1,
         "examples": ["one"],

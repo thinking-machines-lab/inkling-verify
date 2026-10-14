@@ -2,7 +2,7 @@ import json
 import sys
 from argparse import Namespace
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import pytest
 
@@ -23,9 +23,9 @@ BENCHMARKS = (
 
 
 @pytest.mark.parametrize("module,benchmark_type,subset", BENCHMARKS)
-@pytest.mark.parametrize("command", ["prepare", "run"])
+@pytest.mark.parametrize("command,effort", [("prepare", None), ("run", None), ("run", "low")])
 def test_benchmark_entrypoint_dispatches_prepare_and_run(
-    monkeypatch, tmp_path, module, benchmark_type, subset, command
+    monkeypatch, tmp_path, module, benchmark_type, subset, command, effort
 ):
     captured = {}
 
@@ -50,6 +50,8 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
         argv.extend(["--subset", subset])
     if command == "run":
         argv.extend(["--api", "anthropic", "--model", "candidate", "--output", "results"])
+        if effort is not None:
+            argv.extend(["--reasoning-effort", effort])
     elif module is niah:
         argv.extend(["--tokenizer", "model"])
     monkeypatch.setattr(sys, "argv", argv)
@@ -77,8 +79,8 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
         assert args.data_dir.resolve() == tmp_path / "prepared"
         assert args.output.resolve() == tmp_path / "results"
         assert args.limit is None
+        assert args.reasoning_effort == (effort or ("none" if module is niah else "max"))
         if module is hle:
-            assert args.reasoning_effort == "max"
             assert args.max_output_tokens == 262144
         if module is deepswe:
             assert benchmark.allow_network is False
@@ -89,7 +91,7 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
                 args.top_p,
                 args.reasoning_effort,
                 args.concurrency,
-            ) == (4096, 0, None, "none", 4)
+            ) == (4096, 0, None, effort or "none", 4)
 
 
 def test_deepswe_prepare_rejects_subsets(monkeypatch, capsys):
@@ -100,7 +102,10 @@ def test_deepswe_prepare_rejects_subsets(monkeypatch, capsys):
     assert "unrecognized arguments: --subset" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("overrides", [[], ["--max-output-tokens", "1234", "--concurrency", "2"]])
+@pytest.mark.parametrize(
+    "overrides",
+    [[], ["--max-output-tokens", "1234", "--concurrency", "2", "--reasoning-effort", "low"]],
+)
 def test_mmmu_tools_defaults_and_overrides(monkeypatch, overrides):
     captured = {}
 
@@ -132,6 +137,7 @@ def test_mmmu_tools_defaults_and_overrides(monkeypatch, overrides):
     assert captured["benchmark"].cache_name == "mmmu-pro-standard-4"
     args = captured["args"]
     assert (args.max_output_tokens, args.concurrency) == ((1234, 2) if overrides else (524288, 4))
+    assert args.reasoning_effort == ("low" if overrides else "max")
 
 
 @pytest.mark.parametrize(
@@ -342,7 +348,7 @@ async def test_missing_api_key_fails_before_provider_creation(monkeypatch, evalu
             None,
             None,
             None,
-            Generation(32768, temperature=None, top_p=None, reasoning_effort="none"),
+            Generation(32768, temperature=None, top_p=None, reasoning_effort="max"),
         ),
         (
             "openai-completions",
@@ -350,7 +356,7 @@ async def test_missing_api_key_fails_before_provider_creation(monkeypatch, evalu
             "openai-completions",
             "https://candidate/v1",
             "CANDIDATE_KEY",
-            Generation(32768, temperature=0, reasoning_effort="none"),
+            Generation(32768, temperature=0, reasoning_effort="max"),
         ),
         (
             "openai-completions",
@@ -358,7 +364,7 @@ async def test_missing_api_key_fails_before_provider_creation(monkeypatch, evalu
             "anthropic",
             None,
             None,
-            Generation(32768, temperature=0, reasoning_effort="none"),
+            Generation(32768, temperature=0, reasoning_effort="max"),
         ),
         (
             "openai-completions",
@@ -373,7 +379,7 @@ async def test_missing_api_key_fails_before_provider_creation(monkeypatch, evalu
             "openai-completions",
             "https://judge/v1",
             "JUDGE_KEY",
-            Generation(32768, temperature=None, reasoning_effort="none"),
+            Generation(32768, temperature=None, reasoning_effort="max"),
         ),
         (
             "anthropic",
@@ -394,6 +400,7 @@ async def test_missing_api_key_fails_before_provider_creation(monkeypatch, evalu
         ),
     ],
 )
+@pytest.mark.parametrize("judge_effort", [None, "max", "none"])
 def test_hle_cli_resolves_judge_independently(
     monkeypatch,
     candidate_api,
@@ -402,11 +409,16 @@ def test_hle_cli_resolves_judge_independently(
     expected_url,
     expected_key_env,
     expected_generation,
+    judge_effort,
 ):
     captured = {}
+    if judge_effort is not None:
+        arguments = [*arguments, "--judge-reasoning-effort", judge_effort]
+        expected_generation = replace(expected_generation, reasoning_effort=judge_effort)
 
     async def evaluate(benchmark, args, **kwargs):
         captured.update(kwargs)
+        assert args.reasoning_effort == "max"
         assert benchmark.judge_generation == kwargs["judge_generation"]
 
     monkeypatch.setattr(hle, "evaluate", evaluate)

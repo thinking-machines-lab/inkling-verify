@@ -23,7 +23,7 @@ from inkling_vendor_verifier.types import Example, Generation, Message, Text, To
 from inkling_vendor_verifier.types import Image as DisplayImage
 
 APIS = ("openai-completions", "openai-responses", "anthropic")
-GENERATION = Generation(131072, temperature=None, top_p=None, reasoning_effort="high")
+GENERATION = Generation(131072, temperature=None, top_p=None)
 
 
 @pytest.fixture
@@ -193,10 +193,12 @@ async def test_hle_generates_and_judges_across_apis(
             example, candidate, generation, tmp_path, judge=judge
         )
     expected_judge = judge_generation or (
-        Generation(32768, None, None, "none")
+        Generation(32768, None, None, "max")
         if judge_api is None and generation.temperature is None
         else hle.JUDGE_GENERATION
     )
+    if judge_generation is None:
+        assert expected_judge.reasoning_effort == "max"
     assert result.score == 1 and result.answer == "4"
     assert result.details["verdict"] == verdict
     assert result.details["judge_temperature"] == expected_judge.temperature

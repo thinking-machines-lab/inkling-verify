@@ -78,7 +78,7 @@ SCHEMA_SYSTEM_INSTRUCTION = (
         {"name": "ExtractedAnswer", "schema": JUDGE_SCHEMA, "strict": True}, separators=(",", ":")
     )
 )
-JUDGE_GENERATION = Generation(max_tokens=32768, temperature=0.0, top_p=1.0, reasoning_effort="none")
+JUDGE_GENERATION = Generation(max_tokens=32768, temperature=0.0)
 
 
 def parse_verdict(text: str) -> dict[str, Any]:
@@ -239,7 +239,7 @@ def judge_settings(args: argparse.Namespace) -> tuple[argparse.Namespace | None,
 
 def main() -> None:
     root, _, run_parser = parser("HLE without tools")
-    run_parser.set_defaults(reasoning_effort="max", max_output_tokens=262144)
+    run_parser.set_defaults(max_output_tokens=262144)
     add_api_arguments(run_parser, prefix="judge-")
     run_parser.add_argument("--judge-max-output-tokens", type=positive, default=32768)
     run_parser.add_argument(
@@ -250,8 +250,8 @@ def main() -> None:
     )
     run_parser.add_argument(
         "--judge-reasoning-effort",
-        choices=("default", "none", "low", "medium", "high"),
-        default="none",
+        choices=("default", "none", "low", "medium", "high", "max"),
+        default=JUDGE_GENERATION.reasoning_effort,
     )
     args = root.parse_args()
     if args.command == "prepare":

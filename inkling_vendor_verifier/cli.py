@@ -65,7 +65,7 @@ def parser(
     evaluate.add_argument(
         "--reasoning-effort",
         choices=("default", "none", "low", "medium", "high", "max"),
-        default="high",
+        default="max",
     )
     evaluate.add_argument(
         "--limit", type=positive, help="first N cases for a partial-dataset smoke test"
