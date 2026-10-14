@@ -112,7 +112,7 @@ Only one process may use an output directory at a time.
 
 | Default | DeepSWE | MMMU-Pro | HLE candidate | NIAH |
 | --- | --- | --- | --- | --- |
-| Output tokens | 262,144 per tool trajectory | 131,072 | 262,144 | 128 |
+| Output tokens | 262,144 per tool trajectory | 131,072 | 262,144 | 4,096 |
 | Temperature / top-p | 1 / 1 | 1 / 1 | 1 / 1 | 0 / omitted |
 | Reasoning effort | high | high | max (0.99 for Inkling) | none |
 | Concurrency | 32 | 64 | 64 | 4 |
@@ -205,10 +205,11 @@ For a smaller grid, add `--context-lengths 2000 8000 --depths 0 50 100
 --samples-per-cell 1` to preparation. Changing the grid or tokenizer requires a
 separate `--data-dir`.
 
-The grid reserves 128 output tokens but excludes API rendering overhead. Context
-lengths and depths are nominal: added distractors can shift depth slightly.
-Over-budget prompts fail preparation; requests are never truncated. Endpoints
-need room for the prepared prompt, rendering overhead and selected output budget.
+Prompt construction retains the original 128-token reserve so prepared prompts
+stay reproducible; generation now allows 4,096 output tokens. Context lengths and
+depths are nominal: added distractors can shift depth slightly. Over-budget prompts
+fail preparation; requests are never truncated. Endpoints need room for the
+prepared prompt, API rendering overhead and the full 4,096-token output budget.
 A complete run writes `grid.json` with accuracy by context length and depth.
 
 ### DeepSWE sandbox behavior

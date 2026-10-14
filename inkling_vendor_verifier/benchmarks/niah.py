@@ -24,7 +24,8 @@ REPOSITORY = "synthetic/niah-uuid-key-to-value"
 REVISION = "1"
 CONTEXT_LENGTHS = (4000, 16000, 64000, 256000, 1024000)
 DEPTHS = tuple(range(0, 101, 10))
-OUTPUT_RESERVE = 128
+# Keep prepared prompts identical to the original release grid.
+REFERENCE_OUTPUT_RESERVE = 128
 
 
 NEEDLE_TEMPLATE = "One of the special magic uuids for {key} is: {value}."
@@ -211,7 +212,7 @@ class NIAH:
                             rng=rng,
                             count_tokens=count_tokens,
                             tokens_per_line=tokens_per_line,
-                            max_tokens=OUTPUT_RESERVE,
+                            max_tokens=REFERENCE_OUTPUT_RESERVE,
                         )
                         if sample["budgeted_total_tokens"] > context_length:
                             raise ValueError(
@@ -318,7 +319,7 @@ def main() -> None:
     prepare.add_argument("--depths", nargs="+", type=int, default=DEPTHS)
     prepare.add_argument("--samples-per-cell", type=positive, default=10)
     run.set_defaults(
-        max_output_tokens=OUTPUT_RESERVE,
+        max_output_tokens=4096,
         temperature=0.0,
         top_p=None,
         reasoning_effort="none",

@@ -89,7 +89,7 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
                 args.top_p,
                 args.reasoning_effort,
                 args.concurrency,
-            ) == (128, 0, None, "none", 4)
+            ) == (4096, 0, None, "none", 4)
 
 
 def test_deepswe_prepare_rejects_subsets(monkeypatch, capsys):
