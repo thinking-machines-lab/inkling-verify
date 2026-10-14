@@ -14,8 +14,7 @@ cd inkling-vendor-verifier
 python -m pip install -r requirements.txt
 ```
 
-Alternatively, `python -m pip install -e .` installs the `deepswe`, `mmmu-pro`,
-`hle-no-tools`, and `niah` commands.
+Alternatively, use `python -m pip install -e .` to run the modules from any directory.
 
 ## Evaluations
 
@@ -23,7 +22,7 @@ The examples below use `OPENAI_API_KEY` and Chat Completions. For Responses, use
 `--api openai-responses`. For Anthropic, use `--api anthropic`, `ANTHROPIC_API_KEY`,
 and an Anthropic base URL.
 
-Each script has `prepare` and `run` commands. Use `run --help` for options,
+Each evaluation has `prepare` and `run` commands. Use `run --help` for options,
 `--limit N` for a smaller run, and `--resume` to continue an interrupted run.
 Scores are saved in `summary.json` under the output directory.
 
@@ -33,8 +32,8 @@ Scores are saved in `summary.json` under the output directory.
 container. Networking is disabled by default; add `--with-network` to enable it.
 
 ```bash
-python deepswe.py prepare
-python deepswe.py run \
+python -m inkling_vendor_verifier.benchmarks.deepswe prepare
+python -m inkling_vendor_verifier.benchmarks.deepswe run \
   --api openai-completions --model MODEL --base-url https://VENDOR/v1 \
   --output results/deepswe
 ```
@@ -45,8 +44,8 @@ Multimodal multiple-choice questions: `vision`, `standard-4`, or `standard-10`,
 with 1,730 questions each. Add `--with-tools` to enable offline Python image tools.
 
 ```bash
-python mmmu_pro.py prepare --subset vision
-python mmmu_pro.py run --subset vision \
+python -m inkling_vendor_verifier.benchmarks.mmmu_pro prepare --subset vision
+python -m inkling_vendor_verifier.benchmarks.mmmu_pro run --subset vision \
   --api openai-completions --model MODEL --base-url https://VENDOR/v1 \
   --output results/mmmu-pro
 ```
@@ -57,8 +56,8 @@ python mmmu_pro.py run --subset vision \
 use `--judge-model` to select a separate judge.
 
 ```bash
-python hle_no_tools.py prepare
-python hle_no_tools.py run \
+python -m inkling_vendor_verifier.benchmarks.hle_no_tools prepare
+python -m inkling_vendor_verifier.benchmarks.hle_no_tools run \
   --api openai-completions --model MODEL --base-url https://VENDOR/v1 \
   --output results/hle
 ```
@@ -69,8 +68,8 @@ UUID retrieval across 550 cases, with context lengths from 4,000 to 1,024,000
 tokens. Prepare prompts using the model's Hugging Face ID or local tokenizer.
 
 ```bash
-python niah.py prepare --tokenizer MODEL_OR_DIRECTORY
-python niah.py run \
+python -m inkling_vendor_verifier.benchmarks.niah prepare --tokenizer MODEL_OR_DIRECTORY
+python -m inkling_vendor_verifier.benchmarks.niah run \
   --api openai-completions --model MODEL --base-url https://VENDOR/v1 \
   --output results/niah
 ```

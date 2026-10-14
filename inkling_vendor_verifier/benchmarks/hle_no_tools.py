@@ -269,3 +269,7 @@ def main() -> None:
                 judge_generation=judge_generation,
             )
         )
+
+
+if __name__ == "__main__":
+    main()

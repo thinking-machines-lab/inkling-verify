@@ -35,3 +35,7 @@ def main() -> None:
         print(f"Prepared {benchmark.name} in {args.data_dir}")
     else:
         asyncio.run(evaluate(DeepSWE(allow_network=args.with_network), args))
+
+
+if __name__ == "__main__":
+    main()

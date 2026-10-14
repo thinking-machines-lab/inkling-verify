@@ -337,3 +337,7 @@ def main() -> None:
     else:
         asyncio.run(evaluate(benchmark, args))
         write_grid(args.output.resolve())
+
+
+if __name__ == "__main__":
+    main()

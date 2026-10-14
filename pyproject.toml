@@ -12,12 +12,6 @@ dynamic = ["dependencies"]
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=1", "ruff>=0.12"]
 
-[project.scripts]
-deepswe = "inkling_vendor_verifier.benchmarks.deepswe:main"
-mmmu-pro = "inkling_vendor_verifier.benchmarks.mmmu_pro:main"
-hle-no-tools = "inkling_vendor_verifier.benchmarks.hle_no_tools:main"
-niah = "inkling_vendor_verifier.benchmarks.niah:main"
-
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
 

@@ -328,3 +328,7 @@ def main() -> None:
             if args.concurrency is None:
                 args.concurrency = 4
         asyncio.run(evaluate(MMMUPro(args.subset, with_tools=args.with_tools), args))
+
+
+if __name__ == "__main__":
+    main()
