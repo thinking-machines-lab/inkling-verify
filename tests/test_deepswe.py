@@ -103,7 +103,7 @@ async def test_limits_still_grade_committed_patch(
         ]
     )
     if limit == "timeout":
-        sandbox.config = sandbox.config | {"agent": sandbox.config["agent"] | {"timeout_sec": 0}}
+        monkeypatch.setattr(code_agent, "AGENT_TIMEOUT_SECONDS", 0)
         generate = provider.generate
 
         async def wait_for_deadline(*args, **kwargs):

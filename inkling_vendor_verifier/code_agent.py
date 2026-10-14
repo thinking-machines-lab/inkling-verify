@@ -20,6 +20,7 @@ from inkling_vendor_verifier.types import (
 
 MAX_TURNS = 4096
 MAX_TOOL_CALLS = 4096
+AGENT_TIMEOUT_SECONDS = 12 * 3600
 
 
 def bash_tool(*, allow_network: bool = False) -> Tool:
@@ -54,6 +55,9 @@ async def run_bash(sandbox: DockerSandbox, arguments: str) -> tuple[Text, ...]:
             raise ValueError("command must be a nonempty string")
         if "workdir" in args and not isinstance(args["workdir"], str):
             raise ValueError("workdir must be a string")
+        for name in ("command", "workdir"):
+            if "\x00" in args.get(name, ""):
+                raise ValueError(f"{name} contains a NUL character; command was not executed")
         timeout = args.get("timeout", 300)
         if type(timeout) is not int or timeout <= 0:
             raise ValueError("timeout must be a positive integer in seconds")
@@ -88,7 +92,7 @@ class CodeBenchmark:
                 max_turns=MAX_TURNS,
                 max_tool_calls=MAX_TOOL_CALLS,
                 max_turn_tokens=generation.max_tokens,
-                timeout=float(sandbox.config.get("agent", {}).get("timeout_sec", 28800)),
+                timeout=AGENT_TIMEOUT_SECONDS,
             )
             reward, grade = await sandbox.grade()
             return Evaluation(

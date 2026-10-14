@@ -243,8 +243,8 @@ def evaluation(monkeypatch, tmp_path):
     [
         (hle.HLE(), 64, 131072),
         (mmmu.MMMUPro(), 64, 131072),
-        (deepswe.DeepSWE(), 32, 262144),
-        (deepswe.DeepSWE(allow_network=True), 32, 262144),
+        (deepswe.DeepSWE(), 4, 1_000_000),
+        (deepswe.DeepSWE(allow_network=True), 4, 1_000_000),
     ],
 )
 async def test_cli_records_dataset_and_endpoint_without_secrets_and_marks_smoke(
@@ -282,6 +282,9 @@ async def test_cli_records_dataset_and_endpoint_without_secrets_and_marks_smoke(
     assert configuration["full_dataset"] is False
     assert configuration["dataset_size"] == 2
     assert configuration["base_url"] == "http://local.example/v1"
+    assert configuration["request_timeout_seconds"] == 43200
+    if isinstance(benchmark, deepswe.DeepSWE):
+        assert configuration["agent_timeout_seconds"] == 43200
     assert "secret" not in json.dumps(configuration)
     assert kwargs["concurrency"] == concurrency
     if isinstance(benchmark, deepswe.DeepSWE) and benchmark.allow_network:

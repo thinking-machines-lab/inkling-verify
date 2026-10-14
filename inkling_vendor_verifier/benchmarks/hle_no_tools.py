@@ -21,7 +21,15 @@ from inkling_vendor_verifier.cli import (
     parser,
     positive,
 )
-from inkling_vendor_verifier.types import Evaluation, Example, Generation, Message, Provider, Text
+from inkling_vendor_verifier.types import (
+    Evaluation,
+    Example,
+    Generation,
+    JudgeFailure,
+    Message,
+    Provider,
+    Text,
+)
 
 REPOSITORY = "cais/hle"
 REVISION = "5a81a4c7271a2a2a312b9a690f0c2fde837e4c29"
@@ -195,8 +203,15 @@ class HLE:
             response_schema=JUDGE_SCHEMA,
         )
         if judgment.stop_reason != "stop" or judgment.message.tool_calls:
-            raise ValueError(f"HLE judge did not complete a verdict: {judgment.stop_reason}")
-        verdict = parse_verdict(judgment.text)
+            raise JudgeFailure(
+                f"HLE judge did not complete a verdict: {judgment.stop_reason}",
+                candidate=candidate,
+                judgment=judgment,
+            )
+        try:
+            verdict = parse_verdict(judgment.text)
+        except ValueError as error:
+            raise JudgeFailure(str(error), candidate=candidate, judgment=judgment) from error
         return Evaluation(
             float(verdict["correct"] == "yes"),
             verdict["extracted_final_answer"],

@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace
 from typing import Any
 
+from .context_limits import ContextExhausted
 from .types import Generation, Image, Message, Provider, Text, Tool
 
 
@@ -31,11 +32,17 @@ async def run_tools(
     try:
         async with deadline:
             for turns in range(1, max_turns + 1):
-                response = await provider.generate(
-                    history,
-                    replace(generation, max_tokens=min(remaining, max_turn_tokens)),
-                    tools=(tool,),
-                )
+                requested_tokens = min(remaining, max_turn_tokens)
+                try:
+                    response = await provider.generate(
+                        history,
+                        replace(generation, max_tokens=requested_tokens),
+                        tools=(tool,),
+                    )
+                except ContextExhausted:
+                    turns -= 1
+                    stop = "context_limit"
+                    break
                 if response.usage.output_tokens <= 0:
                     raise RuntimeError(
                         "Tool generation requires positive reported output token usage"
@@ -43,8 +50,12 @@ async def run_tools(
                 remaining -= response.usage.output_tokens
                 history.append(response.message)
                 answer = response.text
-                if response.stop_reason == "length" or remaining <= 0:
-                    stop = "max_tokens"
+                if response.stop_reason in {"length", "context_limit"} or remaining <= 0:
+                    stop = (
+                        "context_limit"
+                        if response.stop_reason == "context_limit" and remaining > 0
+                        else "max_tokens"
+                    )
                     break
                 if not response.message.tool_calls:
                     if response.stop_reason == "tool_calls":

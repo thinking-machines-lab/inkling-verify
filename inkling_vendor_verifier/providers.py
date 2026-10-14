@@ -10,11 +10,15 @@ from dataclasses import replace
 from typing import Any, Self, get_args
 
 from anthropic import AsyncAnthropic
+from anthropic import BadRequestError as AnthropicBadRequestError
 from openai import AsyncOpenAI
+from openai import BadRequestError as OpenAIBadRequestError
 
+from .context_limits import OUTPUT_TOKEN_FIELDS, remaining_output_tokens
 from .types import Api, Generation, Image, Message, Response, Text, Tool, ToolCall, Usage
 
 _APIS = get_args(Api)
+REQUEST_TIMEOUT_SECONDS = 12 * 3600
 
 
 def _text(message: Message) -> str:
@@ -278,7 +282,7 @@ def _decode_anthropic(raw: dict[str, Any]) -> tuple[Message, str]:
         "stop_sequence": "stop",
         "tool_use": "tool_calls",
         "max_tokens": "length",
-        "model_context_window_exceeded": "length",
+        "model_context_window_exceeded": "context_limit",
         "refusal": "refusal",
     }.get(reason)
     if stop is None:
@@ -310,7 +314,7 @@ class APIProvider:
         *,
         base_url: str | None = None,
         api_key: str | None = None,
-        timeout: float = 7200,
+        timeout: float = REQUEST_TIMEOUT_SECONDS,
         max_retries: int = 3,
     ) -> None:
         if api not in _APIS:
@@ -337,15 +341,14 @@ class APIProvider:
         tools: Sequence[Tool] = (),
         response_schema: dict[str, Any] | None = None,
     ) -> Response:
-        request: dict[str, Any] = {"model": self.model}
+        output_field = OUTPUT_TOKEN_FIELDS[self.api]
+        request: dict[str, Any] = {"model": self.model, output_field: generation.max_tokens}
         if generation.temperature is not None:
             request["temperature"] = generation.temperature
         if generation.top_p is not None:
             request["top_p"] = generation.top_p
         if self.api == "openai-completions":
-            request.update(
-                messages=_chat_messages(messages), max_completion_tokens=generation.max_tokens
-            )
+            request.update(messages=_chat_messages(messages))
             if generation.reasoning_effort is not None:
                 request["reasoning_effort"] = generation.reasoning_effort
             if tools:
@@ -374,7 +377,6 @@ class APIProvider:
         elif self.api == "openai-responses":
             request.update(
                 input=_response_messages(messages),
-                max_output_tokens=generation.max_tokens,
                 store=False,
                 include=["reasoning.encrypted_content"],
             )
@@ -404,7 +406,7 @@ class APIProvider:
             decode = _decode_responses
         else:
             system, items = _anthropic_messages(messages)
-            request.update(messages=items, max_tokens=generation.max_tokens)
+            request.update(messages=items)
             if system:
                 request["system"] = system
             output_config: dict[str, Any] = {}
@@ -429,7 +431,16 @@ class APIProvider:
                 ]
             create = self.client.messages.create
             decode = _decode_anthropic
-        response = await create(**request)
+        try:
+            response = await create(**request)
+        except (OpenAIBadRequestError, AnthropicBadRequestError) as error:
+            maximum = remaining_output_tokens(error.body, generation.max_tokens)
+            if maximum is None:
+                raise
+            request[output_field] = maximum
+            response = await create(**request)
         raw = response.model_dump(mode="json", exclude_unset=True)
         message, stop = decode(raw)
+        if stop == "length" and request[output_field] < generation.max_tokens:
+            stop = "context_limit"
         return Response(message, _usage(raw, self.api), stop, raw, copy.deepcopy(request))

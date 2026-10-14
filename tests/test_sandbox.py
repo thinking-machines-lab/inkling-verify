@@ -1,19 +1,30 @@
-import io
+import hashlib
 import json
-import os
-import subprocess
 import sys
-import tarfile
+from pathlib import Path
 
 import pytest
 
+from inkling_vendor_verifier import deepswe_images
 from inkling_vendor_verifier import sandbox as module
-from inkling_vendor_verifier.deepswe_images import BASE_IMAGE, dockerfile
+from inkling_vendor_verifier.benchmarks.task_bundles import release
+from inkling_vendor_verifier.deepswe_images import (
+    IMAGE_MANIFEST_SHA256,
+    PLATFORM,
+    solver_dockerfile,
+    verifier_dockerfile,
+)
 from inkling_vendor_verifier.sandbox import (
     CommandResult,
     DockerSandbox,
     command,
     parse_reward,
+)
+
+UPSTREAM_IMAGE = "public.ecr.aws/d3j8x8q7/swe-bench-202605:kh7d5m4ed35zfp7gyhx7wdahed82yw72-v1.1"
+PINNED_IMAGE = (
+    "public.ecr.aws/d3j8x8q7/swe-bench-202605@"
+    "sha256:3a4d47f5281269305343c83729836ac2f3172811aee72681e472a4196178eda1"
 )
 
 
@@ -47,6 +58,8 @@ def deepswe_task(tmp_path):
     (task / "task.toml").write_text(
         """schema_version = "1.3"
 artifacts = ["/logs/artifacts/model.patch"]
+[metadata]
+base_commit_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 [environment]
 docker_image = "fixture:solver"
 os = "linux"
@@ -71,7 +84,7 @@ command = "git diff --binary abc123 HEAD > /logs/artifacts/model.patch"
 timeout_sec = 300
 [solution]
 env = {}
-"""
+""".replace('docker_image = "fixture:solver"', f'docker_image = "{UPSTREAM_IMAGE}"')
     )
     return task
 
@@ -140,6 +153,7 @@ async def test_deepswe_isolates_solver_and_verifier(
             assert builds[0][-1] == str(deepswe_task / "environment")
             await sandbox.run("printf x", workdir="/app")
             assert ("--workdir", "/app") == calls[-1][2:4]
+            assert calls[-1][-3:] == ("bash", "-lc", "printf x")
             result = await sandbox.grade()
             assert result[0] == 1
 
@@ -154,7 +168,9 @@ async def test_deepswe_isolates_solver_and_verifier(
         assert len(runs) == 2
         assert sandbox.solver_image in runs[0]
         assert "fixture:solver" not in runs[0]
-        assert (work / "environment.Dockerfile").read_text().startswith(f"FROM {BASE_IMAGE}\n")
+        assert (work / "environment.Dockerfile").read_text() == (
+            f"FROM {PINNED_IMAGE}\nRUN mkdir -p /logs/artifacts\n"
+        )
         assert (work / "tests.Dockerfile").read_text() == (
             f"FROM {sandbox.solver_image}\nCOPY . /tests/\n"
         )
@@ -171,6 +187,10 @@ async def test_deepswe_isolates_solver_and_verifier(
         ]
     assert any(a[-1] == hook for a in calls)
     assert not any(a[1] == "network" or any("PROXY=" in flag for flag in a) for a in calls)
+    for args in (a for a in calls if a[1] in {"build", "run"}):
+        assert args[args.index("--platform") + 1] == "linux/amd64"
+        if args[1] == "build":
+            assert "--network=none" in args
     for args in (a for a in calls if a[1] == "run"):
         assert args[args.index("--network") + 1] == ("bridge" if allow_network else "none")
         assert "--cap-drop=ALL" in args and "--security-opt=no-new-privileges" in args
@@ -179,61 +199,87 @@ async def test_deepswe_isolates_solver_and_verifier(
         assert not any(flag.startswith(("--mount", "--volume", "--privileged")) for flag in args)
         name = args[args.index("--name") + 1]
         assert ("docker", "rm", "--force", name) in calls
+    if not failure:
+        grading = next(a for a in calls if a[-1].endswith("bash /tests/test.sh"))
+        assert grading[-3:-1] == ("bash", "-c")
     assert not sandbox._created
 
 
-@pytest.mark.parametrize("solver_image", [None, "inkling-verifier-task:123"])
-def test_deepswe_rejects_unexpected_image_stages(solver_image):
+async def test_verifier_shell_preserves_image_virtualenv_path(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "venv/bin"
+    bin_dir.mkdir(parents=True)
+    pytest_executable = bin_dir / "pytest"
+    pytest_executable.write_text("#!/bin/sh\nprintf 'image virtualenv pytest\\n'\n")
+    pytest_executable.chmod(0o755)
+    image_path = f"{bin_dir}:/usr/bin:/bin"
+    monkeypatch.setenv("PATH", image_path)
+    monkeypatch.delenv("BASH_ENV", raising=False)
+    container = module.Container(tmp_path)
+
+    async def local_exec(*args, **kwargs):
+        assert args[:3] == ("docker", "exec", container.name)
+        return await command(*args[3:], **kwargs)
+
+    monkeypatch.setattr(module, "command", local_exec)
+    result = await container.run('pytest && printf "%s\\n" "$PATH"', login_shell=False)
+    assert result.exit_code == 0
+    assert result.stdout == f"image virtualenv pytest\n{image_path}\n"
+
+
+@pytest.mark.parametrize("source", ["RUN true\n", "FROM first\nFROM second\n"])
+def test_deepswe_rejects_unexpected_verifier_image_stages(source):
     with pytest.raises(ValueError, match="one DeepSWE Dockerfile stage"):
-        dockerfile(
-            "FROM public.ecr.aws/x8v8d7g8/mars-base:latest\nFROM another:image\n", solver_image
-        )
-    with pytest.raises(ValueError, match="Unexpected DeepSWE base image"):
-        dockerfile("FROM changed:upstream\n")
+        verifier_dockerfile(source, "inkling-verifier-task:123")
 
 
-@pytest.mark.parametrize("architecture", ["aarch64", "x86_64"])
-def test_deepswe_native_nextest_download_and_extraction(tmp_path, architecture):
-    archive = tmp_path / "nextest.tar.gz"
-    with tarfile.open(archive, "w:gz") as output:
-        member = tarfile.TarInfo("cargo-nextest")
-        member.size, member.uid, member.gid = 7, 1001, 128
-        output.addfile(member, io.BytesIO(b"nextest"))
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    for name, script in {
-        "uname": f"printf '%s\\n' {architecture}",
-        "curl": 'printf \'%s\' "$2" > "$REQUEST_LOG"; cat "$TEST_ARCHIVE"',
-    }.items():
-        path = bin_dir / name
-        path.write_text("#!/bin/sh\n" + script + "\n")
-        path.chmod(0o755)
-    recipe = dockerfile(
-        "FROM public.ecr.aws/x8v8d7g8/mars-base:latest\n"
-        'RUN curl -LsSf "https://get.nexte.st/${NEXTEST_VERSION}/linux"'
-        " | tar zxf - -C .\n"
+def test_deepswe_image_pins_cover_the_release_and_have_a_resume_identity():
+    raw = Path(deepswe_images.__file__).with_suffix(".json").read_bytes()
+    manifest = json.loads(raw)
+    assert manifest["task_manifest_sha256"] == release("deepswe")["manifest_sha256"]
+    assert len(manifest["images"]) == 113
+    assert IMAGE_MANIFEST_SHA256 == hashlib.sha256(raw).hexdigest()
+    assert PLATFORM == "linux/amd64"
+    assert solver_dockerfile(UPSTREAM_IMAGE) == (
+        f"FROM {PINNED_IMAGE}\nRUN mkdir -p /logs/artifacts\n"
     )
-    script = next(
-        line.removeprefix("RUN ") for line in recipe.splitlines() if line.startswith("RUN ")
-    )
-    subprocess.run(
-        ["sh", "-ec", script],
-        cwd=tmp_path,
-        env=os.environ
-        | {
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "NEXTEST_VERSION": "0.9.97",
-            "REQUEST_LOG": str(tmp_path / "url"),
-            "TEST_ARCHIVE": str(archive),
-        },
-        check=True,
-    )
-    assert (tmp_path / "url").read_text() == (
-        "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.97/"
-        f"cargo-nextest-0.9.97-{architecture}-unknown-linux-gnu.tar.gz"
-    )
-    assert (tmp_path / "cargo-nextest").read_bytes() == b"nextest"
-    assert (tmp_path / "cargo-nextest").stat().st_uid == os.getuid()
+
+
+async def test_deepswe_rejects_unpinned_images_without_building(deepswe_task, monkeypatch):
+    path = deepswe_task / "task.toml"
+    path.write_text(path.read_text().replace(UPSTREAM_IMAGE, "unlisted:image"))
+
+    async def unexpected_docker(*args, **kwargs):
+        pytest.fail("Unpinned images must not reach the container engine")
+
+    monkeypatch.setattr(module, "command", unexpected_docker)
+    with pytest.raises(ValueError, match="No pinned DeepSWE image"):
+        async with DockerSandbox(deepswe_task, deepswe_task / "result"):
+            pytest.fail("unexpected unpinned image")
+
+
+async def test_deepswe_checks_pinned_image_base_commit(deepswe_task, monkeypatch):
+    async def docker(*args, **kwargs):
+        return CommandResult("b" * 40 if args[-1] == "git rev-parse HEAD" else "", "", 0, 0)
+
+    monkeypatch.setattr(module, "command", docker)
+    sandbox = DockerSandbox(deepswe_task, deepswe_task / "result")
+    with pytest.raises(RuntimeError, match="does not match the task's base commit"):
+        async with sandbox:
+            pytest.fail("unexpected mismatched image")
+    assert not sandbox._created
+
+
+async def test_image_tools_container_uses_native_platform(tmp_path, monkeypatch):
+    calls = []
+
+    async def docker(*args, **kwargs):
+        calls.append(args)
+        return CommandResult("", "", 0, 0)
+
+    monkeypatch.setattr(module, "command", docker)
+    sandbox = module.Container(tmp_path)
+    await sandbox._start_container("python-tools:image", {"memory_mb": 8192})
+    assert "--platform" not in calls[0]
 
 
 async def test_deepswe_verifier_cache_includes_solver_image(deepswe_task, tmp_path, monkeypatch):

@@ -189,12 +189,57 @@ async def test_concurrent_questions_build_the_python_image_once(tmp_path, monkey
     assert [call[0] for call in calls] == ["image", "build"]
 
 
-async def test_dead_kernel_fails_the_request(tmp_path):
+@pytest.mark.parametrize("exit_code", [0, 1, 125, 137, -11])
+async def test_unconfirmed_kernel_crash_fails_the_request(tmp_path, exit_code):
     sandbox = PythonSandbox(tmp_path)
     kernel_reply(sandbox)
     sandbox._process.stdout.readline = AsyncMock(return_value=b"")
+    sandbox._process.wait = AsyncMock(return_value=exit_code)
+    sandbox._start_kernel = AsyncMock()
     with pytest.raises(RuntimeError, match="without a reply"):
         await sandbox.execute('{"code":"1"}')
+    sandbox._start_kernel.assert_not_awaited()
+
+
+async def test_sigsegv_restarts_kernel_reports_lost_state_and_allows_next_cell(tmp_path):
+    sandbox = PythonSandbox(tmp_path)
+    kernel_reply(sandbox)
+    sandbox._process.stdout.readline = AsyncMock(return_value=b"")
+    sandbox._process.wait = AsyncMock(return_value=139)
+    sandbox._reap_kernel = AsyncMock()
+    sandbox._docker = AsyncMock()
+
+    async def start_kernel():
+        assert sandbox._lock.locked()
+        kernel_reply(sandbox, result_repr="42")
+
+    sandbox._start_kernel = AsyncMock(side_effect=start_kernel)
+    code = (
+        "import cv2, numpy as np\n"
+        "cv2.connectedComponentsWithStats(np.zeros((0, 90), dtype=np.uint8), 8)"
+    )
+    result = await sandbox.execute(json.dumps({"code": code}))
+    assert "SIGSEGV (exit 139)" in result[0].text
+    assert "in-memory state (variables, imports) was lost" in result[0].text
+    assert json.loads((tmp_path / "python-kernel-crashes.jsonl").read_text()) == {
+        "exit_code": 139,
+        "request": {"code": code, "timeout": 60.0, "max_output_bytes": 16384},
+    }
+    sandbox._reap_kernel.assert_awaited_once_with()
+    sandbox._start_kernel.assert_awaited_once_with()
+    sandbox._docker.assert_not_awaited()
+    assert await sandbox.execute('{"code":"6 * 7"}') == (Text("42"),)
+
+
+async def test_sigsegv_restart_failure_remains_fatal(tmp_path):
+    sandbox = PythonSandbox(tmp_path)
+    kernel_reply(sandbox)
+    sandbox._process.stdout.readline = AsyncMock(return_value=b"")
+    sandbox._process.wait = AsyncMock(return_value=139)
+    sandbox._reap_kernel = AsyncMock()
+    sandbox._start_kernel = AsyncMock(side_effect=RuntimeError("restart failed"))
+    with pytest.raises(RuntimeError, match="restart failed"):
+        await sandbox.execute('{"code":"native_crash()"}')
 
 
 async def test_output_limits_are_enforced_at_the_container_boundary(tmp_path, monkeypatch):

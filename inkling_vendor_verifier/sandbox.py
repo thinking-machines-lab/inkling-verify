@@ -14,7 +14,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
 
-from inkling_vendor_verifier.deepswe_images import dockerfile as deepswe_dockerfile
+from inkling_vendor_verifier.deepswe_images import (
+    PLATFORM,
+    solver_dockerfile,
+    verifier_dockerfile,
+)
 
 
 @dataclass(frozen=True)
@@ -175,9 +179,12 @@ class Container:
     async def start(self) -> None:
         raise NotImplementedError
 
-    async def _start_container(self, image: str, environment: dict[str, Any]) -> None:
+    async def _start_container(
+        self, image: str, environment: dict[str, Any], *, platform: str | None = None
+    ) -> None:
         await self._docker(
             "run",
+            *(["--platform", platform] if platform else []),
             "--detach",
             "--name",
             self.name,
@@ -217,6 +224,7 @@ class Container:
         workdir: str | None = None,
         timeout: float = 300,
         output_limit: int = 16 * 1024,
+        login_shell: bool = True,
     ) -> CommandResult:
         if not text or not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("A command and positive finite timeout are required")
@@ -233,7 +241,7 @@ class Container:
             "KILL",
             str(timeout),
             "bash",
-            "-lc",
+            "-lc" if login_shell else "-c",
             text,
             timeout=timeout + 30,
             output_limit=output_limit,
@@ -252,13 +260,15 @@ class DockerSandbox(Container):
         environment = self.config["environment"]
         image = await self._image(self.task / "environment", environment)
         self.solver_image = image
-        await self._start_container(image, environment)
+        await self._start_container(image, environment, platform=PLATFORM)
         baseline = await self.run("git rev-parse HEAD", timeout=60)
         if baseline.exit_code or not re.fullmatch(
             r"[0-9a-f]{40}|[0-9a-f]{64}", baseline.stdout.strip()
         ):
             raise RuntimeError("Task environment must start in a checked-out git repository")
         self.base_commit = baseline.stdout.strip()
+        if not self.base_commit.startswith(self.config["metadata"]["base_commit_hash"]):
+            raise RuntimeError("Pinned DeepSWE image does not match the task's base commit")
 
     async def _image(
         self, context: Path, environment: dict[str, Any], solver_image: str | None = None
@@ -267,13 +277,20 @@ class DockerSandbox(Container):
         for path in sorted(context.rglob("*")):
             if path.is_file():
                 digest.update(str(path.relative_to(context)).encode() + b"\0" + path.read_bytes())
-        recipe = deepswe_dockerfile((context / "Dockerfile").read_text(), solver_image)
+        recipe = (
+            verifier_dockerfile((context / "Dockerfile").read_text(), solver_image)
+            if solver_image is not None
+            else solver_dockerfile(self.config["environment"]["docker_image"])
+        )
         dockerfile = self.work_dir / f"{context.name}.Dockerfile"
         dockerfile.write_text(recipe)
         digest.update(recipe.encode())
         image = "inkling-verifier-task:" + digest.hexdigest()
         result = await self._docker(
             "build",
+            "--platform",
+            PLATFORM,
+            "--network=none",
             "--tag",
             image,
             "--file",
@@ -295,6 +312,8 @@ class DockerSandbox(Container):
             "env LOG_FILE=/logs/verifier/test-output.log bash /tests/test.sh",
             timeout=float(verifier.get("timeout_sec", 3600)),
             output_limit=1024 * 1024,
+            # Login profiles can discard the verifier image's virtualenv PATH.
+            login_shell=False,
         )
         (self.work_dir / "verifier.stdout").write_text(test.stdout)
         (self.work_dir / "verifier.stderr").write_text(test.stderr)
@@ -323,7 +342,7 @@ class DockerSandbox(Container):
         self.name += "-verifier"
         assert self.solver_image is not None
         image = await self._image(self.task / "tests", verifier["environment"], self.solver_image)
-        await self._start_container(image, verifier["environment"])
+        await self._start_container(image, verifier["environment"], platform=PLATFORM)
         await self._docker("exec", self.name, "mkdir", "-p", "/logs/artifacts")
         await self._docker("cp", str(candidate), self.name + ":/logs/artifacts/model.patch")
         return patch

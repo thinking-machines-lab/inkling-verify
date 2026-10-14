@@ -12,7 +12,16 @@ from inkling_vendor_verifier.benchmarks.hle_no_tools import (
     _prepare_row,
     parse_verdict,
 )
-from inkling_vendor_verifier.types import Example, Generation, Message, Response, Text, Usage
+from inkling_vendor_verifier.runner import run
+from inkling_vendor_verifier.types import (
+    Example,
+    Generation,
+    JudgeFailure,
+    Message,
+    Response,
+    Text,
+    Usage,
+)
 
 VERDICT = {
     "extracted_final_answer": "4",
@@ -140,5 +149,57 @@ async def test_incomplete_judgments_do_not_become_wrong_answers(tmp_path, stop_r
             )
 
     example = Example("task", (), "4", {"question": "Question"})
-    with pytest.raises(ValueError, match="did not complete"):
+    with pytest.raises(JudgeFailure, match="did not complete"):
         await HLE().evaluate(example, FakeProvider(), Generation(100), tmp_path)
+
+
+@pytest.mark.parametrize("failure", ["length", "refusal", "tool_calls", "invalid_json"])
+@pytest.mark.parametrize("all_failed", [False, True])
+async def test_judge_failures_are_unscored_terminal_and_do_not_abort_other_cases(
+    tmp_path, failure, all_failed
+):
+    class Provider:
+        calls = 0
+
+        async def generate(self, messages, generation, **kwargs):
+            self.calls += 1
+            judging = kwargs["response_schema"] is not None
+            failing = judging and (self.calls == 2 or all_failed)
+            text = "unfinished" if failing else json.dumps(VERDICT) if judging else "candidate"
+            stop = failure if failing and failure != "invalid_json" else "stop"
+            return Response(
+                Message("assistant", (Text(text),)), Usage(1, 2), stop, {"text": text}, {}
+            )
+
+    provider = Provider()
+    examples = [Example(str(i), (), "4", {"question": "Question"}) for i in range(2)]
+    options = dict(configuration={"dataset": {"fixture": "hle"}}, concurrency=1)
+    summary = await run(HLE(), examples, provider, Generation(100), tmp_path, **options)
+    expected_failed = 2 if all_failed else 1
+    assert summary["status"] == "completed_with_errors"
+    assert summary["completed"] == 2 - expected_failed
+    assert summary["failed"] == expected_failed
+    assert summary["processed"] == 2
+    assert summary["coverage"] == (2 - expected_failed) / 2
+    assert summary["accuracy"] is None
+    assert summary["provisional_accuracy"] == (None if all_failed else 1.0)
+    assert summary["recorded_usage"]["output_tokens"] == 8
+    assert provider.calls == 4
+    first = tmp_path / "samples" / hashlib.sha256(b"0").hexdigest()
+    assert not (first / "result.json").exists()
+    saved = json.loads((first / "failure.json").read_text())
+    assert "score" not in saved
+    assert saved["type"] == "JudgeFailure"
+    assert saved["details"]["candidate_answer"] == "candidate"
+    assert saved["details"]["judge_stop_reason"] == (
+        "stop" if failure == "invalid_json" else failure
+    )
+    original = {p: p.read_bytes() for p in first.rglob("*.json")}
+    resumed = await run(
+        HLE(), examples, provider, Generation(100), tmp_path, **options, resume=True
+    )
+    assert resumed["status"] == "completed_with_errors"
+    assert provider.calls == 4
+    assert resumed["recorded_usage"] == summary["recorded_usage"]
+    assert resumed["current_session_completed_output_tokens_per_second"] == 0
+    assert original == {p: p.read_bytes() for p in first.rglob("*.json")}

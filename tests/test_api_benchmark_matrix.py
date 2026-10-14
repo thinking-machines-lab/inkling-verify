@@ -399,6 +399,43 @@ async def test_hle_invalid_judge_is_error_across_protocols(sdk_provider, reply, 
 
 
 @pytest.mark.parametrize("api", APIS)
+async def test_deepswe_nul_command_returns_tool_error_and_continues(
+    monkeypatch, sdk_provider, reply, tmp_path, api
+):
+    sandbox = Sandbox()
+    monkeypatch.setattr(code_agent, "DockerSandbox", lambda *args, **kwargs: sandbox)
+    invalid = "printf 'prefix\x00suffix'"
+    provider, requests = sdk_provider(
+        api, [reply(api, None, tools=(invalid, "pwd")), reply(api, "Fixed.")]
+    )
+    example = Example("nul", (), "", {"task_dir": str(tmp_path), "suite": "deepswe"})
+    async with provider:
+        result = await DeepSWE().evaluate(example, provider, GENERATION, tmp_path)
+    assert sandbox.commands == [("pwd", None, 300)]
+    assert sandbox.graded and result.score == 1
+    assert result.details["turns"] == 2 and result.details["tool_calls"] == 2
+    second_request = json.loads(requests[1].content)
+    assert "command contains a NUL character; command was not executed" in json.dumps(
+        second_request
+    )
+
+
+@pytest.mark.parametrize("field", ["command", "workdir"])
+async def test_bash_rejects_nul_arguments_without_changing_valid_escapes(field):
+    sandbox = Sandbox()
+    args = {"command": r"printf '\\0'", "workdir": "/repo"}
+    original = args.copy()
+    args[field] += "\x00"
+    result = await code_agent.run_bash(sandbox, json.dumps(args))
+    assert json.loads(result[0].text) == {
+        "error": f"{field} contains a NUL character; command was not executed"
+    }
+    assert sandbox.commands == []
+    await code_agent.run_bash(sandbox, json.dumps(original))
+    assert sandbox.commands == [(original["command"], "/repo", 300)]
+
+
+@pytest.mark.parametrize("api", APIS)
 @pytest.mark.parametrize("subset", ["standard-4", "standard-10"])
 async def test_mmmu_standard_interleaved_images_across_apis(
     sdk_provider, reply, tmp_path, api, subset

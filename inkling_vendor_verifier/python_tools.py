@@ -215,8 +215,24 @@ class PythonSandbox(Container):
                         "was lost; re-run setup before retrying."
                     ),
                 )
-        if not raw:
-            raise RuntimeError("Python kernel exited without a reply; inspect python-kernel.log")
+            if not raw:
+                code = await asyncio.wait_for(process.wait(), timeout=10)
+                if code != 139:
+                    raise RuntimeError(
+                        f"Python kernel exited without a reply (exit {code}); "
+                        "inspect python-kernel.log"
+                    )
+                with (self.work_dir / "python-kernel-crashes.jsonl").open("a") as log:
+                    log.write(json.dumps({"exit_code": code, "request": request}) + "\n")
+                await self._reap_kernel()
+                await self._start_kernel()
+                return (
+                    Text(
+                        "Python execution failed: the kernel exited with SIGSEGV (exit 139). "
+                        "The kernel was restarted, so in-memory state (variables, imports) "
+                        "was lost; re-run setup before retrying."
+                    ),
+                )
         result = json.loads(raw)
         parts = [_truncate_text(result[key], 16384).rstrip("\n") for key in ("stdout", "stderr")]
         text = "\n".join(part for part in parts if part)

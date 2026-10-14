@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import get_args
 from urllib.parse import urlsplit
 
-from .code_agent import CodeBenchmark
-from .providers import APIProvider
+from .code_agent import AGENT_TIMEOUT_SECONDS, CodeBenchmark
+from .deepswe_images import IMAGE_MANIFEST_SHA256
+from .providers import REQUEST_TIMEOUT_SECONDS, APIProvider
 from .runner import run
 from .types import Api, Benchmark, Generation
 
@@ -59,7 +60,11 @@ def parser(
     evaluate.add_argument("--data-dir", type=Path, default=Path("data"))
     evaluate.add_argument("--output", type=Path, required=True)
     evaluate.add_argument("--concurrency", type=positive)
-    evaluate.add_argument("--max-output-tokens", type=positive)
+    evaluate.add_argument(
+        "--max-output-tokens",
+        type=positive,
+        help="output token budget, cumulative across tool turns",
+    )
     evaluate.add_argument("--temperature", type=optional_float, default=1.0, metavar="FLOAT|none")
     evaluate.add_argument("--top-p", type=optional_float, default=1.0, metavar="FLOAT|none")
     evaluate.add_argument(
@@ -127,7 +132,7 @@ async def evaluate(
         examples = examples[: args.limit]
     code = isinstance(benchmark, CodeBenchmark)
     generation = Generation(
-        max_tokens=args.max_output_tokens or (262144 if code else 131072),
+        max_tokens=args.max_output_tokens or (1_000_000 if code else 131072),
         temperature=args.temperature,
         top_p=args.top_p,
         reasoning_effort=None if args.reasoning_effort == "default" else args.reasoning_effort,
@@ -141,7 +146,11 @@ async def evaluate(
         "dataset_size": dataset_size,
         "selected_size": len(examples),
         "full_dataset": len(examples) == dataset_size,
+        "request_timeout_seconds": REQUEST_TIMEOUT_SECONDS,
     }
+    if code:
+        configuration["agent_timeout_seconds"] = AGENT_TIMEOUT_SECONDS
+        configuration["image_manifest_sha256"] = IMAGE_MANIFEST_SHA256
     if code and benchmark.allow_network:
         configuration["allow_network"] = True
     async with AsyncExitStack() as stack:
@@ -182,7 +191,7 @@ async def evaluate(
             generation,
             args.output.resolve(),
             configuration=configuration,
-            concurrency=args.concurrency or (32 if code else 64),
+            concurrency=args.concurrency or (4 if code else 64),
             resume=args.resume,
             judge=judge,
         )
