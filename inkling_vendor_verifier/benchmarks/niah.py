@@ -24,7 +24,6 @@ REPOSITORY = "synthetic/niah-uuid-key-to-value"
 REVISION = "1"
 CONTEXT_LENGTHS = (4000, 16000, 64000, 256000, 1024000)
 DEPTHS = tuple(range(0, 101, 10))
-# Keep prepared prompts identical to the original release grid.
 REFERENCE_OUTPUT_RESERVE = 128
 
 

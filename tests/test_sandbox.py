@@ -17,11 +17,12 @@ from inkling_vendor_verifier.sandbox import (
 )
 
 
-def test_zero_is_valid_and_missing_is_failure(tmp_path):
+@pytest.mark.parametrize("crash_sentinel", [False, True])
+def test_deepswe_missing_reward_is_an_infrastructure_failure(tmp_path, crash_sentinel):
+    if crash_sentinel:
+        (tmp_path / "reward.txt").write_text("-1")
     with pytest.raises(RuntimeError, match="did not produce reward.json"):
         parse_reward(tmp_path)
-    (tmp_path / "reward.json").write_text('{"reward": 0}')
-    assert parse_reward(tmp_path) == 0
 
 
 @pytest.mark.parametrize("reward", [0, 1, 0.5, -1, True, "1", None, float("nan")])
@@ -32,12 +33,6 @@ def test_deepswe_uses_binary_structured_reward(tmp_path, reward):
     else:
         with pytest.raises(ValueError, match="binary reward"):
             parse_reward(tmp_path)
-
-
-def test_deepswe_crash_sentinel_is_an_infrastructure_failure(tmp_path):
-    (tmp_path / "reward.txt").write_text("-1")
-    with pytest.raises(RuntimeError, match="did not produce reward.json"):
-        parse_reward(tmp_path)
 
 
 @pytest.fixture

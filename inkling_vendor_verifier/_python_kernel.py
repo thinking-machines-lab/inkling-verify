@@ -194,9 +194,6 @@ def run_cell(code: str, timeout: float, max_output_bytes: int = 0) -> CellResult
     except _CellTimeout:
         exit_code = 124
         err.write(f"TimeoutError: cell exceeded {timeout} seconds\n")
-    except SystemExit:
-        exit_code = 1
-        err.write(traceback.format_exc())
     except BaseException:
         exit_code = 1
         err.write(traceback.format_exc())

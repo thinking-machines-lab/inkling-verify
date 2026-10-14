@@ -29,8 +29,8 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
 ):
     captured = {}
 
-    def prepare(*args, **kwargs):
-        captured["prepare"] = (args, kwargs)
+    def prepare(self, data_dir, *args, **kwargs):
+        captured["prepare"] = ((self.name, data_dir, *args), kwargs)
 
     async def evaluate(benchmark, args, **kwargs):
         captured["run"] = (benchmark, args)
@@ -39,11 +39,7 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
     monkeypatch.setattr(module, "evaluate", evaluate)
     if module is niah:
         monkeypatch.setattr(niah, "write_grid", lambda output: None)
-    monkeypatch.setattr(
-        benchmark_type,
-        "prepare",
-        lambda self, data_dir, *args, **kwargs: prepare(self.name, data_dir, *args, **kwargs),
-    )
+    monkeypatch.setattr(benchmark_type, "prepare", prepare)
     expected_name = (benchmark_type() if subset is None else benchmark_type(subset)).name
     argv = ["benchmark.py", command, "--data-dir", "prepared"]
     if subset is not None:
@@ -348,7 +344,7 @@ async def test_missing_api_key_fails_before_provider_creation(monkeypatch, evalu
             None,
             None,
             None,
-            Generation(32768, temperature=None, top_p=None, reasoning_effort="max"),
+            Generation(262144, temperature=None, top_p=None, reasoning_effort="high"),
         ),
         (
             "openai-completions",
@@ -356,7 +352,7 @@ async def test_missing_api_key_fails_before_provider_creation(monkeypatch, evalu
             "openai-completions",
             "https://candidate/v1",
             "CANDIDATE_KEY",
-            Generation(32768, temperature=0, reasoning_effort="max"),
+            Generation(262144, temperature=0, reasoning_effort="high"),
         ),
         (
             "openai-completions",
@@ -364,7 +360,7 @@ async def test_missing_api_key_fails_before_provider_creation(monkeypatch, evalu
             "anthropic",
             None,
             None,
-            Generation(32768, temperature=0, reasoning_effort="max"),
+            Generation(262144, temperature=0, reasoning_effort="high"),
         ),
         (
             "openai-completions",
@@ -379,7 +375,7 @@ async def test_missing_api_key_fails_before_provider_creation(monkeypatch, evalu
             "openai-completions",
             "https://judge/v1",
             "JUDGE_KEY",
-            Generation(32768, temperature=None, reasoning_effort="max"),
+            Generation(262144, temperature=None, reasoning_effort="high"),
         ),
         (
             "anthropic",

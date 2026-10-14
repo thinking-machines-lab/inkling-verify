@@ -78,7 +78,7 @@ SCHEMA_SYSTEM_INSTRUCTION = (
         {"name": "ExtractedAnswer", "schema": JUDGE_SCHEMA, "strict": True}, separators=(",", ":")
     )
 )
-JUDGE_GENERATION = Generation(max_tokens=32768, temperature=0.0)
+JUDGE_GENERATION = Generation(max_tokens=262144, temperature=0.0, reasoning_effort="high")
 
 
 def parse_verdict(text: str) -> dict[str, Any]:
@@ -241,7 +241,9 @@ def main() -> None:
     root, _, run_parser = parser("HLE without tools")
     run_parser.set_defaults(max_output_tokens=262144)
     add_api_arguments(run_parser, prefix="judge-")
-    run_parser.add_argument("--judge-max-output-tokens", type=positive, default=32768)
+    run_parser.add_argument(
+        "--judge-max-output-tokens", type=positive, default=JUDGE_GENERATION.max_tokens
+    )
     run_parser.add_argument(
         "--judge-temperature", type=optional_float, default=argparse.SUPPRESS, metavar="FLOAT|none"
     )

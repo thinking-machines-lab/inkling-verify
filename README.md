@@ -136,8 +136,8 @@ Unsupported settings fail explicitly instead of falling back.
 
 HLE judges each visible candidate answer in a fresh conversation, excluding
 separate reasoning. Default self-judging uses the candidate endpoint/model,
-32,768 output tokens, temperature 0, top-p 1 and `max` reasoning effort. Explicit
-candidate sampling omissions also apply to the default self-judge.
+262,144 output tokens, temperature 0, top-p 1 and `high` reasoning effort (0.9 for
+Inkling). Explicit candidate sampling omissions also apply to the default self-judge.
 
 ```bash
 export JUDGE_API_KEY=...

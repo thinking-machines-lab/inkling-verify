@@ -42,38 +42,6 @@ def user_text(body, api):
     return "".join(part["text"] for part in content if "text" in part)
 
 
-def assert_judge_request(body, api, generation):
-    messages = conversation(body, api)
-    assert [message["role"] for message in messages] == (
-        ["user"] if api == "anthropic" else ["system", "user"]
-    )
-    system = body["system"][0]["text"] if api == "anthropic" else messages[0]["content"]
-    assert system == hle.SCHEMA_SYSTEM_INSTRUCTION
-    assert "tools" not in body
-    for field in ("temperature", "top_p"):
-        value = getattr(generation, field)
-        if value is None:
-            assert field not in body
-        else:
-            assert body[field] == value
-    if api == "openai-completions":
-        assert body["response_format"]["json_schema"]["schema"] == hle.JUDGE_SCHEMA
-        assert body["reasoning_effort"] == generation.reasoning_effort
-        assert body["max_completion_tokens"] == generation.max_tokens
-    elif api == "openai-responses":
-        assert body["text"]["format"]["schema"] == hle.JUDGE_SCHEMA
-        assert body["reasoning"] == {"effort": generation.reasoning_effort}
-        assert body["max_output_tokens"] == generation.max_tokens
-    else:
-        assert body["output_config"]["format"]["schema"] == hle.JUDGE_SCHEMA
-        assert body["max_tokens"] == generation.max_tokens
-        if generation.reasoning_effort == "none":
-            assert body["thinking"] == {"type": "disabled"}
-        else:
-            assert body["thinking"] == {"type": "adaptive"}
-            assert body["output_config"]["effort"] == generation.reasoning_effort
-
-
 @pytest.mark.parametrize("api", APIS)
 async def test_niah_uses_same_prompt_and_visible_answer_across_apis(
     sdk_provider, reply, tmp_path, api
@@ -193,12 +161,13 @@ async def test_hle_generates_and_judges_across_apis(
             example, candidate, generation, tmp_path, judge=judge
         )
     expected_judge = judge_generation or (
-        Generation(32768, None, None, "max")
+        Generation(262144, None, None, "high")
         if judge_api is None and generation.temperature is None
         else hle.JUDGE_GENERATION
     )
     if judge_generation is None:
-        assert expected_judge.reasoning_effort == "max"
+        assert expected_judge.reasoning_effort == "high"
+        assert expected_judge.max_tokens == 262144
     assert result.score == 1 and result.answer == "4"
     assert result.details["verdict"] == verdict
     assert result.details["judge_temperature"] == expected_judge.temperature
@@ -223,26 +192,51 @@ async def test_hle_generates_and_judges_across_apis(
         else conversation(candidate_body, api)[0]["content"]
     )
     assert system == hle.SYSTEM_PROMPTS["exactMatch"]
-    assert "tools" not in candidate_body
-    if generation.temperature is None:
-        assert all(field not in candidate_body for field in ("temperature", "top_p"))
     assert user_text(candidate_body, api) == example.metadata["question"]
     assert user_text(judge_body, judge_api or api) == hle.JUDGE_PROMPT.format(
         question=example.metadata["question"], response=answer, correct_answer="4"
     )
     for private_state in ("native reasoning", "opaque reasoning", "opaque signature"):
         assert private_state not in json.dumps(judge_body)
-    assert_judge_request(judge_body, judge_api or api, expected_judge)
-    if api == "openai-completions":
-        assert candidate_body["reasoning_effort"] == generation.reasoning_effort
-        assert candidate_body["max_completion_tokens"] == generation.max_tokens
-    elif api == "openai-responses":
-        assert candidate_body["reasoning"] == {"effort": generation.reasoning_effort}
-        assert candidate_body["max_output_tokens"] == generation.max_tokens
-    else:
-        assert candidate_body["thinking"] == {"type": "adaptive"}
-        assert candidate_body["output_config"]["effort"] == generation.reasoning_effort
-        assert candidate_body["max_tokens"] == generation.max_tokens
+    judge_api = judge_api or api
+    messages = conversation(judge_body, judge_api)
+    assert [message["role"] for message in messages] == (
+        ["user"] if judge_api == "anthropic" else ["system", "user"]
+    )
+    system = judge_body["system"][0]["text"] if judge_api == "anthropic" else messages[0]["content"]
+    assert system == hle.SCHEMA_SYSTEM_INSTRUCTION
+    schema = (
+        judge_body["response_format"]["json_schema"]["schema"]
+        if judge_api == "openai-completions"
+        else judge_body["text"]["format"]["schema"]
+        if judge_api == "openai-responses"
+        else judge_body["output_config"]["format"]["schema"]
+    )
+    assert schema == hle.JUDGE_SCHEMA
+    for body, protocol, settings in (
+        (candidate_body, api, generation),
+        (judge_body, judge_api, expected_judge),
+    ):
+        assert "tools" not in body
+        for field in ("temperature", "top_p"):
+            value = getattr(settings, field)
+            if value is None:
+                assert field not in body
+            else:
+                assert body[field] == value
+        if protocol == "openai-completions":
+            assert body["reasoning_effort"] == settings.reasoning_effort
+            assert body["max_completion_tokens"] == settings.max_tokens
+        elif protocol == "openai-responses":
+            assert body["reasoning"] == {"effort": settings.reasoning_effort}
+            assert body["max_output_tokens"] == settings.max_tokens
+        else:
+            assert body["max_tokens"] == settings.max_tokens
+            if settings.reasoning_effort == "none":
+                assert body["thinking"] == {"type": "disabled"}
+            else:
+                assert body["thinking"] == {"type": "adaptive"}
+                assert body["output_config"]["effort"] == settings.reasoning_effort
 
 
 @pytest.mark.parametrize("api", APIS)

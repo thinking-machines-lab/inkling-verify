@@ -1,6 +1,5 @@
 FROM docker.io/library/python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
 
-# Support rootless builders with a single mapped UID.
 RUN mkdir -p /usr/local/share/fonts \
     && apt-get -o APT::Sandbox::User=root update \
     && apt-get -o APT::Sandbox::User=root install -y --no-install-recommends tesseract-ocr libgomp1 \
