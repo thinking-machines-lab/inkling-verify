@@ -12,7 +12,7 @@ Requires Python 3.12+ on Linux or macOS. DeepSWE and MMMU-Pro with tools also re
 
 MMMU tools run natively on ARM64 and x86-64. DeepSWE uses pinned x86-64 images;
 running it on ARM requires x86 emulation configured in the container host
-(QEMU 10.0.13+ with binfmt on Linux, or Rosetta in the Podman VM on Apple Silicon).
+(QEMU 10.0.3+ with binfmt on Linux, or Rosetta in the Podman VM on Apple Silicon).
 
 ```bash
 git clone https://github.com/thinking-machines-lab/inkling-verify.git
