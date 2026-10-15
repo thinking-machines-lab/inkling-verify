@@ -12,7 +12,7 @@ from inkling_verify.benchmarks.hle import (
     _prepare_row,
     parse_verdict,
 )
-from inkling_verify.runner import run
+from inkling_verify.runner import run, sample_directory
 from inkling_verify.types import (
     Example,
     Generation,
@@ -170,7 +170,7 @@ async def test_judge_failures_are_unscored_terminal_and_do_not_abort_other_cases
     assert summary["recorded_usage"]["output_tokens"] == 8
     assert summary["usage"]["output_tokens"] == (0 if all_failed else 4)
     assert provider.calls == 4
-    first = tmp_path / "samples" / hashlib.sha256(b"0").hexdigest()
+    first = sample_directory(tmp_path, "0", 0)
     saved = json.loads((first / "result.json").read_text())
     assert saved["score"] is None
     assert saved["answer"] == "candidate"

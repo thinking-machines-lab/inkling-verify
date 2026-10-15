@@ -17,7 +17,7 @@ from tokenizers import Tokenizer
 
 from inkling_verify.benchmarks.data import read_cache, write_cache
 from inkling_verify.cli import evaluate, parser, positive
-from inkling_verify.runner import write_json
+from inkling_verify.runner import sample_directory, write_json
 from inkling_verify.types import Evaluation, Example, Generation, Message, Provider, Text
 
 REPOSITORY = "synthetic/niah-uuid-key-to-value"
@@ -283,25 +283,37 @@ class NIAH:
 
 def write_grid(output: Path) -> None:
     manifest = json.loads((output / "run.json").read_text())
-    counts = Counter(tuple(map(int, case_id.split("_")[-3:-1])) for case_id in manifest["examples"])
+    case_cells = {
+        case_id: tuple(map(int, case_id.split("_")[-3:-1])) for case_id in manifest["examples"]
+    }
+    samples_per_problem = manifest["samples_per_problem"]
     cells = {
         cell: {
             "context_length": cell[0],
             "depth_percent": cell[1],
-            "expected": count,
+            "expected": count * samples_per_problem,
             "completed": 0,
             "correct": 0,
         }
-        for cell, count in counts.items()
+        for cell, count in Counter(case_cells.values()).items()
     }
-    for case_id in manifest["examples"]:
-        path = output / "samples" / hashlib.sha256(case_id.encode()).hexdigest() / "result.json"
-        if path.exists():
-            result = json.loads(path.read_text())
-            details = result["details"]
-            cell = cells[details["context_length"], details["depth_percent"]]
-            cell["completed"] += 1
-            cell["correct"] += result["score"]
+    for case_id, cell_key in case_cells.items():
+        for sample_index in range(samples_per_problem):
+            path = sample_directory(output, case_id, sample_index) / "result.json"
+            if path.exists():
+                result = json.loads(path.read_text())
+                details = result["details"]
+                if (
+                    result["id"] != case_id
+                    or result["sample_index"] != sample_index
+                    or (details["context_length"], details["depth_percent"]) != cell_key
+                ):
+                    raise ValueError(
+                        f"Mismatched saved result for {case_id}, sample {sample_index}"
+                    )
+                cell = cells[cell_key]
+                cell["completed"] += 1
+                cell["correct"] += result["score"]
     for cell in cells.values():
         score = cell["correct"] / cell["completed"] if cell["completed"] else None
         cell["accuracy"] = score if cell["completed"] == cell["expected"] else None

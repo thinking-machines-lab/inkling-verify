@@ -23,6 +23,10 @@ def write_json(path: Path, value: Any) -> None:
     temporary.replace(path)
 
 
+def sample_directory(output: Path, example_id: str, sample_index: int) -> Path:
+    return output / "samples" / f"{hashlib.sha256(example_id.encode()).hexdigest()}-{sample_index}"
+
+
 class RecordingProvider:
     def __init__(
         self,
@@ -77,6 +81,7 @@ async def run(
     *,
     configuration: dict[str, Any],
     concurrency: int,
+    samples_per_problem: int = 1,
     resume: bool = False,
     judge: Provider | None = None,
 ) -> dict[str, Any]:
@@ -84,6 +89,8 @@ async def run(
         raise ValueError("The selected dataset is empty")
     if concurrency < 1:
         raise ValueError("concurrency must be positive")
+    if samples_per_problem < 1:
+        raise ValueError("samples_per_problem must be positive")
     ids = [example.id for example in examples]
     if len(set(ids)) != len(ids):
         raise ValueError("Dataset contains duplicate example IDs")
@@ -96,11 +103,12 @@ async def run(
         except BlockingIOError as error:
             raise ValueError("Another evaluation is using this output directory") from error
         manifest = {
-            "schema_version": 3,
+            "schema_version": 4,
             "benchmark": benchmark.name,
             "configuration": configuration,
             "generation": asdict(generation),
             "concurrency": concurrency,
+            "samples_per_problem": samples_per_problem,
             "examples": ids,
         }
         manifest_path = output_dir / "run.json"
@@ -121,21 +129,30 @@ async def run(
                 )
             write_json(manifest_path, manifest)
 
-        results: dict[str, dict[str, Any]] = {}
-        pending: asyncio.Queue[Example] = asyncio.Queue()
+        expected = len(examples) * samples_per_problem
+        results: dict[tuple[str, int], dict[str, Any]] = {}
+        pending: asyncio.Queue[tuple[Example, int]] = asyncio.Queue()
         for example in examples:
-            directory = output_dir / "samples" / hashlib.sha256(example.id.encode()).hexdigest()
-            result_path = directory / "result.json"
-            if result_path.exists():
-                result = json.loads(result_path.read_text())
-                if result["id"] != example.id or (
-                    result["score"] is not None
-                    and (not math.isfinite(result["score"]) or not 0 <= result["score"] <= 1)
-                ):
-                    raise ValueError(f"Mismatched saved result for {example.id}")
-                results[example.id] = result
-            else:
-                pending.put_nowait(example)
+            for sample_index in range(samples_per_problem):
+                result_path = sample_directory(output_dir, example.id, sample_index) / "result.json"
+                if result_path.exists():
+                    result = json.loads(result_path.read_text())
+                    if (
+                        result["id"] != example.id
+                        or result["sample_index"] != sample_index
+                        or (
+                            result["score"] is not None
+                            and (
+                                not math.isfinite(result["score"]) or not 0 <= result["score"] <= 1
+                            )
+                        )
+                    ):
+                        raise ValueError(
+                            f"Mismatched saved result for {example.id}, sample {sample_index}"
+                        )
+                    results[example.id, sample_index] = result
+                else:
+                    pending.put_nowait((example, sample_index))
 
         started = time.monotonic()
         previous_output_tokens = sum(
@@ -160,11 +177,11 @@ async def run(
             value = {
                 "status": status,
                 "updated_utc": datetime.now(UTC).isoformat(),
-                "expected": len(examples),
+                "expected": expected,
                 "completed": completed,
                 "failed": len(results) - completed,
                 "processed": len(results),
-                "coverage": completed / len(examples),
+                "coverage": completed / expected,
                 "accuracy": score_sum / completed if status == "completed" else None,
                 "provisional_accuracy": score_sum / completed if completed else None,
                 "usage": usage,
@@ -182,8 +199,8 @@ async def run(
 
         async def worker() -> None:
             while not pending.empty():
-                example = pending.get_nowait()
-                directory = output_dir / "samples" / hashlib.sha256(example.id.encode()).hexdigest()
+                example, sample_index = pending.get_nowait()
+                directory = sample_directory(output_dir, example.id, sample_index)
                 directory.mkdir(parents=True, exist_ok=True)
                 attempts = sorted(directory.glob("attempt-*"))
                 attempt = directory / f"attempt-{len(attempts) + 1:04d}"
@@ -212,6 +229,7 @@ async def run(
                         raise ValueError(f"Invalid score for {example.id}: {evaluation.score}")
                     result = {
                         "id": example.id,
+                        "sample_index": sample_index,
                         **asdict(evaluation),
                         "seconds": time.monotonic() - case_started,
                         "attempt": attempt.name,
@@ -222,17 +240,22 @@ async def run(
                         },
                     }
                     write_json(directory / "result.json", result)
-                    results[example.id] = result
+                    results[example.id, sample_index] = result
                     progress = summary("running")
                     print(
-                        f"{benchmark.name}: {progress['completed']}/{len(examples)} completed, "
+                        f"{benchmark.name}: {progress['completed']}/{expected} completed, "
                         f"{progress['failed']} unscored",
                         flush=True,
                     )
                 except Exception as error:
                     write_json(
                         attempt / "error.json",
-                        {"id": example.id, "type": type(error).__name__, "message": str(error)},
+                        {
+                            "id": example.id,
+                            "sample_index": sample_index,
+                            "type": type(error).__name__,
+                            "message": str(error),
+                        },
                     )
                     raise
                 finally:
@@ -245,7 +268,7 @@ async def run(
         except BaseException:
             summary("incomplete")
             raise
-        if len(results) != len(examples):
+        if len(results) != expected:
             raise RuntimeError("Evaluation ended without complete coverage")
         return summary(
             "completed_with_errors"

@@ -1,12 +1,11 @@
 import asyncio
-import hashlib
 import json
 from dataclasses import replace
 from functools import partial
 
 import pytest
 
-from inkling_verify.runner import run
+from inkling_verify.runner import run, sample_directory
 from inkling_verify.types import (
     Evaluation,
     Example,
@@ -78,7 +77,8 @@ class ConstantProvider:
         return response()
 
 
-async def test_concurrency_slot_includes_generation_and_judging(execute):
+@pytest.mark.parametrize("samples_per_problem", [1, 4])
+async def test_concurrency_slot_includes_generation_and_judging(execute, samples_per_problem):
     both_judging = asyncio.Event()
     release = asyncio.Event()
     calls = []
@@ -99,6 +99,7 @@ async def test_concurrency_slot_includes_generation_and_judging(execute):
             [example(str(i)) for i in range(5)],
             BlockingProvider(),
             concurrency=2,
+            samples_per_problem=samples_per_problem,
         )
     )
     try:
@@ -107,8 +108,8 @@ async def test_concurrency_slot_includes_generation_and_judging(execute):
     finally:
         release.set()
     summary = await asyncio.wait_for(task, timeout=3)
-    assert summary["completed"] == 5
-    assert summary["recorded_usage"]["output_tokens"] == 70
+    assert summary["completed"] == 5 * samples_per_problem
+    assert summary["recorded_usage"]["output_tokens"] == 70 * samples_per_problem
 
 
 @pytest.mark.parametrize("external", [False, True])
@@ -177,17 +178,20 @@ async def test_failed_judging_preserves_candidate_artifact_and_usage_on_resume(
     assert len(list(tmp_path.glob("samples/*/attempt-0002/call-*.json"))) == 2
 
 
-async def test_completed_resume_makes_no_calls_and_has_zero_session_throughput(execute, tmp_path):
+@pytest.mark.parametrize("samples_per_problem", [1, 4])
+async def test_completed_resume_makes_no_calls_and_has_zero_session_throughput(
+    execute, tmp_path, samples_per_problem
+):
     provider = ConstantProvider()
     args = (OnceBenchmark(), [example()], provider)
-    first = await execute(*args)
-    second = await execute(*args, resume=True)
-    assert provider.calls == 1
+    first = await execute(*args, samples_per_problem=samples_per_problem)
+    second = await execute(*args, samples_per_problem=samples_per_problem, resume=True)
+    assert provider.calls == samples_per_problem
     assert second["recorded_usage"] == first["recorded_usage"]
     assert second["current_session_completed_output_tokens_per_second"] == 0
     assert second["coverage"] == 1
     assert json.loads((tmp_path / "run.json").read_text()) == {
-        "schema_version": 3,
+        "schema_version": 4,
         "benchmark": "test",
         "configuration": CONFIGURATION,
         "generation": {
@@ -197,8 +201,75 @@ async def test_completed_resume_makes_no_calls_and_has_zero_session_throughput(e
             "reasoning_effort": "max",
         },
         "concurrency": 1,
+        "samples_per_problem": samples_per_problem,
         "examples": ["one"],
     }
+
+
+async def test_repeated_samples_resume_independently_and_average_all_attempts(execute, tmp_path):
+    examples = [example("one"), example("two")]
+    observed = []
+    answers = iter(["4", "wrong", "4", "wrong", "4", "wrong", "4", "wrong", "4"])
+
+    class Provider:
+        async def generate(self, messages, generation, **kwargs):
+            return response(next(answers))
+
+    class Benchmark:
+        name = "repeated"
+
+        async def evaluate(self, current, provider, generation, work_dir, *, judge=None):
+            assert any(current is original for original in examples)
+            observed.append((current.id, work_dir))
+            value = await provider.generate(current.messages, generation)
+            if len(observed) == 3:
+                raise TimeoutError("Interrupted sample")
+            return Evaluation(float(value.text == current.target), value.text)
+
+    args = (Benchmark(), examples, Provider())
+    with pytest.raises(ExceptionGroup, match="TaskGroup"):
+        await execute(*args, samples_per_problem=4)
+    partial = json.loads((tmp_path / "summary.json").read_text())
+    assert partial["expected"] == 8
+    assert partial["completed"] == 2
+    assert partial["coverage"] == 0.25
+    assert partial["accuracy"] is None
+    assert partial["provisional_accuracy"] == 0.5
+    preserved = {
+        path: path.read_bytes()
+        for index in range(2)
+        for path in sample_directory(tmp_path, "one", index).rglob("*.json")
+    }
+    failed_directory = sample_directory(tmp_path, "one", 2)
+    error = json.loads((failed_directory / "attempt-0001/error.json").read_text())
+    assert (error["id"], error["sample_index"]) == ("one", 2)
+
+    summary = await execute(*args, samples_per_problem=4, resume=True)
+    assert summary["status"] == "completed"
+    assert summary["expected"] == summary["completed"] == summary["processed"] == 8
+    assert summary["accuracy"] == 0.5
+    assert summary["coverage"] == 1
+    assert summary["usage"]["output_tokens"] == 8 * 7
+    assert summary["recorded_usage"]["output_tokens"] == 9 * 7
+    assert all(path.read_bytes() == contents for path, contents in preserved.items())
+    assert [identifier for identifier, _ in observed] == ["one"] * 5 + ["two"] * 4
+    assert len({directory for _, directory in observed}) == 9
+    assert len({directory.parent for _, directory in observed}) == 8
+    results = [json.loads(path.read_text()) for path in tmp_path.glob("samples/*/result.json")]
+    assert {(result["id"], result["sample_index"]) for result in results} == {
+        (original.id, index) for original in examples for index in range(4)
+    }
+    assert (failed_directory / "attempt-0002/call-0000.json").is_file()
+
+
+@pytest.mark.parametrize("samples_per_problem", [0, -1])
+async def test_samples_per_problem_must_be_positive(execute, samples_per_problem):
+    provider = ConstantProvider()
+    with pytest.raises(ValueError, match="samples_per_problem must be positive"):
+        await execute(
+            OnceBenchmark(), [example()], provider, samples_per_problem=samples_per_problem
+        )
+    assert provider.calls == 0
 
 
 @pytest.mark.parametrize(
@@ -218,6 +289,7 @@ async def test_completed_resume_makes_no_calls_and_has_zero_session_throughput(e
         "judge-base_url",
         "judge-generation",
         "allow_network",
+        "samples_per_problem",
     ],
 )
 async def test_resume_rejects_changed_workload(execute, change):
@@ -233,6 +305,7 @@ async def test_resume_rejects_changed_workload(execute, change):
     }
     examples = [example("one"), example("two")]
     generation = GENERATION
+    samples_per_problem = 1
     benchmark = OnceBenchmark()
     await execute(benchmark, examples, provider, configuration=configuration)
     if change == "benchmark":
@@ -249,6 +322,8 @@ async def test_resume_rejects_changed_workload(execute, change):
         generation = replace(GENERATION, max_tokens=99)
     elif change == "allow_network":
         configuration = configuration | {"allow_network": True}
+    elif change == "samples_per_problem":
+        samples_per_problem = 4
     else:
         field = change.removeprefix("judge-")
         value = (
@@ -264,6 +339,7 @@ async def test_resume_rejects_changed_workload(execute, change):
             provider,
             configuration=configuration,
             generation=generation,
+            samples_per_problem=samples_per_problem,
             resume=True,
         )
     assert provider.calls == 2
@@ -282,7 +358,7 @@ async def test_run_requires_prepared_dataset_manifest(execute, dataset):
     assert provider.calls == 0
 
 
-@pytest.mark.parametrize("version", [2, 4])
+@pytest.mark.parametrize("version", [3, 5])
 async def test_resume_explicitly_rejects_incompatible_manifest_schema(execute, tmp_path, version):
     (tmp_path / "run.json").write_text(json.dumps({"schema_version": version}))
     provider = ConstantProvider()
@@ -337,10 +413,13 @@ async def test_partial_dataset_completion_remains_labeled_as_smoke(execute):
     assert result["full_dataset"] is False
 
 
-@pytest.mark.parametrize("field, value", [("id", "other"), ("score", -1), ("score", float("nan"))])
+@pytest.mark.parametrize(
+    "field, value",
+    [("id", "other"), ("sample_index", 1), ("score", -1), ("score", float("nan"))],
+)
 async def test_invalid_saved_result_is_rejected(execute, tmp_path, field, value):
     await execute(OnceBenchmark(), [example()], ConstantProvider())
-    path = tmp_path / "samples" / hashlib.sha256(b"one").hexdigest() / "result.json"
+    path = sample_directory(tmp_path, "one", 0) / "result.json"
     result = json.loads(path.read_text())
     result[field] = value
     path.write_text(json.dumps(result))

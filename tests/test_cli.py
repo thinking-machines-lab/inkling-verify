@@ -97,16 +97,18 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
         assert args.data_dir.resolve() == tmp_path / "prepared"
         assert args.output.resolve() == tmp_path / "results"
         assert args.limit is None
+        assert args.samples_per_problem == 1
         assert args.reasoning_effort == (effort or ("none" if module is niah else "max"))
         if module is mmau:
             assert args.max_output_tokens is None
         if module is deepswe:
             assert result["benchmark_configuration"] == {
-                "agent_timeout_seconds": 43200,
+                "agent_timeout_seconds": 14400,
                 "image_manifest_sha256": deepswe.IMAGE_MANIFEST_SHA256,
                 "allow_network": False,
             }
             assert benchmark.allow_network is False
+            assert benchmark.timeout_seconds == args.timeout_seconds == 14400
             assert args.max_output_tokens == 1_000_000
             assert args.concurrency == 4
         if module is niah:
@@ -124,6 +126,21 @@ def test_deepswe_prepare_rejects_subsets(invoke, capsys):
         invoke(deepswe, "--subset", "deepswe", command="prepare")
     assert error.value.code == 2
     assert "unrecognized arguments: --subset" in capsys.readouterr().err
+
+
+def test_deepswe_solver_deadline_override(invoke):
+    result = invoke(deepswe, "--timeout-seconds", "3600")
+    assert result["benchmark"].timeout_seconds == 3600
+    assert result["benchmark_configuration"]["agent_timeout_seconds"] == 3600
+    assert result["benchmark"].allow_network is False
+    assert result["args"].max_output_tokens == 1_000_000
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])
+def test_deepswe_rejects_invalid_solver_deadline(invoke, value):
+    with pytest.raises(SystemExit) as error:
+        invoke(deepswe, "--timeout-seconds", value)
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize(
@@ -144,6 +161,8 @@ def test_mmmu_tools_defaults_and_overrides(invoke, overrides):
     "flag,value",
     [
         ("--concurrency", "0"),
+        ("--samples-per-problem", "0"),
+        ("--samples-per-problem", "-1"),
         ("--limit", "-1"),
         ("--max-output-tokens", "0"),
         ("--temperature", "nan"),
@@ -264,6 +283,8 @@ async def test_cli_records_dataset_and_endpoint_without_secrets_and_marks_smoke(
         api,
         "--limit",
         "1",
+        "--samples-per-problem",
+        "4",
         "--temperature",
         "none",
         "--top-p",
@@ -284,10 +305,12 @@ async def test_cli_records_dataset_and_endpoint_without_secrets_and_marks_smoke(
     assert configuration["dataset"] == {"revision": "test", "examples_sha256": "abc"}
     assert configuration["full_dataset"] is False
     assert configuration["dataset_size"] == 2
+    assert configuration["selected_size"] == 1
     assert configuration["base_url"] == "http://local.example/v1"
     assert configuration["request_timeout_seconds"] == 43200
     assert "secret" not in json.dumps(configuration)
     assert kwargs["concurrency"] == concurrency
+    assert kwargs["samples_per_problem"] == 4
     assert captured["closed"] == ["candidate"]
     args.concurrency, args.max_output_tokens = 2, 123
     await cli.evaluate(benchmark, args)

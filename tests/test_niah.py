@@ -6,6 +6,7 @@ import pytest
 from tokenizers import Tokenizer, models, pre_tokenizers
 
 from inkling_verify.benchmarks import niah
+from inkling_verify.runner import sample_directory
 
 REFERENCE = json.loads((Path(__file__).parent / "fixtures" / "niah_release.json").read_text())
 GRID = {
@@ -152,23 +153,29 @@ def test_release_grading_searches_visible_text_without_punctuation_normalization
     assert niah.grade_response(ANSWER, response) == (correct, extracted)
 
 
-def test_grid_preserves_unfinished_and_unstarted_cells(tmp_path):
+@pytest.mark.parametrize("samples_per_problem", [1, 3])
+def test_grid_preserves_unfinished_and_unstarted_cells(tmp_path, samples_per_problem):
     ids = [
         f"niah_uuid_key_to_value_{context}_{depth}_{index}"
         for context, depth, index in [(512, 0, 1), (512, 0, 2), (512, 50, 3), (1024, 0, 4)]
     ]
-    (tmp_path / "run.json").write_text(json.dumps({"examples": ids}))
-    for index, context, score in [(0, 512, 1.0), (3, 1024, 0.0)]:
-        directory = tmp_path / "samples" / hashlib.sha256(ids[index].encode()).hexdigest()
-        directory.mkdir(parents=True)
-        (directory / "result.json").write_text(
-            json.dumps(
-                {
-                    "score": score,
-                    "details": {"context_length": context, "depth_percent": 0},
-                }
+    (tmp_path / "run.json").write_text(
+        json.dumps({"examples": ids, "samples_per_problem": samples_per_problem})
+    )
+    for index, context in [(0, 512), (3, 1024)]:
+        for sample_index in range(samples_per_problem):
+            directory = sample_directory(tmp_path, ids[index], sample_index)
+            directory.mkdir(parents=True)
+            (directory / "result.json").write_text(
+                json.dumps(
+                    {
+                        "id": ids[index],
+                        "sample_index": sample_index,
+                        "score": float(index == 0 and sample_index == 0),
+                        "details": {"context_length": context, "depth_percent": 0},
+                    }
+                )
             )
-        )
     niah.write_grid(tmp_path)
     cells = json.loads((tmp_path / "grid.json").read_text())
     fields = (
@@ -181,7 +188,37 @@ def test_grid_preserves_unfinished_and_unstarted_cells(tmp_path):
         "provisional_accuracy",
     )
     assert [tuple(cell[field] for field in fields) for cell in cells] == [
-        (512, 0, 2, 1, 1.0, None, 1.0),
-        (512, 50, 1, 0, 0, None, None),
-        (1024, 0, 1, 1, 0.0, 0.0, 0.0),
+        (512, 0, 2 * samples_per_problem, samples_per_problem, 1.0, None, 1 / samples_per_problem),
+        (512, 50, samples_per_problem, 0, 0, None, None),
+        (1024, 0, samples_per_problem, samples_per_problem, 0.0, 0.0, 0.0),
     ]
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"id": "different"},
+        {"sample_index": 1},
+        {"details": {"context_length": 1024, "depth_percent": 0}},
+    ],
+)
+def test_grid_rejects_mismatched_results(tmp_path, changed):
+    case_id = "niah_uuid_key_to_value_512_0_1"
+    (tmp_path / "run.json").write_text(
+        json.dumps({"examples": [case_id], "samples_per_problem": 1})
+    )
+    directory = sample_directory(tmp_path, case_id, 0)
+    directory.mkdir(parents=True)
+    (directory / "result.json").write_text(
+        json.dumps(
+            {
+                "id": case_id,
+                "sample_index": 0,
+                "score": 1.0,
+                "details": {"context_length": 512, "depth_percent": 0},
+            }
+            | changed
+        )
+    )
+    with pytest.raises(ValueError, match="Mismatched saved result"):
+        niah.write_grid(tmp_path)
