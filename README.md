@@ -10,10 +10,6 @@ Requires Python 3.12+ on Linux or macOS. DeepSWE and MMMU-Pro with tools also re
 `podman machine init` and `podman machine start` after installation. Check that
 `podman info --format '{{.Host.Security.Rootless}}'` prints `true`.
 
-MMMU tools run natively on ARM64 and x86-64. DeepSWE uses pinned x86-64 images;
-running it on ARM requires x86 emulation configured in the container host
-(QEMU 10.0.3+ with binfmt on Linux, or Rosetta in the Podman VM on Apple Silicon).
-
 ```bash
 git clone https://github.com/thinking-machines-lab/inkling-verify.git
 cd inkling-verify
@@ -37,6 +33,10 @@ Scores are saved in `summary.json` under the output directory.
 113 coding tasks, graded by testing the model's committed patch in a fresh
 container. Networking is disabled by default; add `--with-network` to enable it.
 
+DeepSWE uses pinned x86-64 images; running it on ARM requires x86 emulation
+configured in the container host (QEMU 10.0.3+ with binfmt on Linux, or Rosetta in
+the Podman VM on Apple Silicon).
+
 ```bash
 python -m inkling_verify.benchmarks.deepswe prepare
 python -m inkling_verify.benchmarks.deepswe run \
@@ -47,7 +47,8 @@ python -m inkling_verify.benchmarks.deepswe run \
 ### MMMU-Pro
 
 Multimodal multiple-choice questions: `vision`, `standard-4`, or `standard-10`,
-with 1,730 questions each. The example enables offline Python image tools.
+with 1,730 questions each. The example enables Python image tools that run in a
+Podman sandbox with networking disabled.
 
 ```bash
 python -m inkling_verify.benchmarks.mmmu_pro prepare --subset vision
