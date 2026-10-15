@@ -13,7 +13,6 @@ from inkling_verify.deepswe_images import (
     IMAGE_MANIFEST_SHA256,
     PLATFORM,
     solver_image,
-    verifier_dockerfile,
 )
 from inkling_verify.python_tools import PythonSandbox
 from inkling_verify.sandbox import (
@@ -52,7 +51,23 @@ def test_deepswe_uses_binary_structured_reward(tmp_path, reward):
 def deepswe_task(tmp_path):
     task = tmp_path / "task"
     (task / "tests").mkdir(parents=True)
-    (task / "tests/Dockerfile").write_text("FROM fixture:solver\nCOPY . /tests/\n")
+    (task / "tests/Dockerfile").write_text(
+        "# Hidden tests are only installed in the verifier.\n"
+        f"FROM {UPSTREAM_IMAGE}\n\n"
+        "COPY test.sh /tests/test.sh\n"
+        "COPY test.patch /tests/test.patch\n"
+        "COPY grader.py /tests/grader.py\n"
+        "COPY config.json /tests/config.json\n"
+        "RUN chmod +x /tests/test.sh\n"
+    )
+    for name, content in {
+        "test.sh": b"#!/bin/sh\npython /tests/grader.py\n",
+        "test.patch": b"trusted tests\x00\xff",
+        "grader.py": b"print('grade')\n",
+        "config.json": b'{"test": "trusted"}\n',
+    }.items():
+        (task / "tests" / name).write_bytes(content)
+        (task / "tests" / name).chmod(0o644)
     (task / "task.toml").write_text(
         """[metadata]
 base_commit_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -155,7 +170,7 @@ def test_deepswe_rejects_invalid_resource_limits(deepswe_task, memory, original)
         DeepSWESandbox(deepswe_task, deepswe_task / "result")
 
 
-@pytest.mark.parametrize("failure", [None, "collect", "verifier-build", "patch-symlink"])
+@pytest.mark.parametrize("failure", [None, "collect", "verifier-copy", "patch-symlink"])
 @pytest.mark.parametrize("allow_network", [False, True])
 async def test_deepswe_isolates_solver_and_verifier(
     deepswe_task, tmp_path, monkeypatch, failure, allow_network
@@ -165,6 +180,8 @@ async def test_deepswe_isolates_solver_and_verifier(
     sandbox = DeepSWESandbox(deepswe_task, work, allow_network=allow_network)
     hook = sandbox.config["verifier"]["collect"][0]["command"]
     patch_bytes = b"binary patch\x00\xff"
+    copied_tests = {}
+    copied_modes = {}
 
     async def podman(*args, **kwargs):
         calls.append(args)
@@ -174,11 +191,15 @@ async def test_deepswe_isolates_solver_and_verifier(
         if args[-1] == "git rev-parse HEAD":
             return CommandResult("a" * 40, "", 0, 0.1)
         if (failure == "collect" and args[-1] == hook) or (
-            failure == "verifier-build"
-            and args[1] == "build"
-            and args[-1] == str(deepswe_task / "tests")
+            failure == "verifier-copy" and args[1] == "cp" and args[2] == str(work / "tests")
         ):
             return CommandResult("", "injected failure", 1, 0.1)
+        if args[1] == "cp" and args[2] == str(work / "tests"):
+            assert args[-1] == solver + "-verifier:/"
+            assert (work / "tests").stat().st_mode & 0o777 == 0o755
+            for path in (work / "tests").iterdir():
+                copied_tests[f"/tests/{path.name}"] = path.read_bytes()
+                copied_modes[path.name] = path.stat().st_mode & 0o777
         if args[1] == "cp" and args[2].endswith(":/logs/artifacts/model.patch"):
             candidate = work / "candidate.patch"
             if failure == "patch-symlink":
@@ -198,6 +219,7 @@ async def test_deepswe_isolates_solver_and_verifier(
             assert calls[1] == ("podman", "info", "--format", "{{.Host.Arch}}")
             assert not any(a[1] == "network" for a in calls)
             assert not any(a[1] == "build" for a in calls)
+            assert not copied_tests
             assert (work / "logs/artifacts").is_dir()
             assert ("podman", "cp", str(work / "logs"), solver + ":/") in calls
             await sandbox.run("printf x", workdir="/app")
@@ -215,31 +237,36 @@ async def test_deepswe_isolates_solver_and_verifier(
         verifier = solver + "-verifier"
         runs = [a for a in calls if a[1] == "run"]
         assert len(runs) == 2
-        assert PINNED_IMAGE in runs[0]
-        assert "fixture:solver" not in runs[0]
-        assert (work / "tests.Dockerfile").read_text() == (
-            f"FROM {sandbox.solver_image}\nCOPY . /tests/\n"
-        )
-        assert (deepswe_task / "tests/Dockerfile").read_text().startswith("FROM fixture:solver\n")
+        assert all(PINNED_IMAGE in run for run in runs)
         assert "--cpus=3" in runs[1] and "--memory=12288m" in runs[1]
         remove = calls.index(("podman", "rm", "--force", solver))
         assert remove < calls.index(runs[1])
-        assert any(a[1] == "build" and a[-1] == str(deepswe_task / "tests") for a in calls)
+        test_names = ("test.sh", "test.patch", "grader.py", "config.json")
+        assert copied_tests == {
+            f"/tests/{name}": (deepswe_task / "tests" / name).read_bytes() for name in test_names
+        }
+        assert copied_modes == {name: 0o755 if name == "test.sh" else 0o644 for name in test_names}
+        assert all(
+            (deepswe_task / "tests" / name).stat().st_mode & 0o777 == 0o644 for name in test_names
+        )
+        assert not any(a[1] == "exec" and a[3:4] in (("mkdir",), ("chmod",)) for a in calls)
         copies = [a[2:] for a in calls if a[1] == "cp"]
         assert copies == [
             (str(work / "logs"), solver + ":/"),
             (solver + ":/logs/artifacts/model.patch", str(work / "candidate.patch")),
+            (str(work / "tests"), verifier + ":/"),
             (str(work / "logs"), verifier + ":/"),
             (str(work / "candidate.patch"), verifier + ":/logs/artifacts/model.patch"),
             (verifier + ":/logs/verifier", str(work / "verifier")),
         ]
+        assert calls.index(runs[1]) < calls.index(
+            ("podman", "cp", str(work / "tests"), verifier + ":/")
+        )
     assert any(a[-1] == hook for a in calls)
+    assert not any(a[1] == "build" for a in calls)
     assert not any(a[1] == "network" or any("PROXY=" in flag for flag in a) for a in calls)
-    for args in (a for a in calls if a[1] in {"build", "run"}):
-        assert args[args.index("--platform") + 1] == "linux/amd64"
-        if args[1] == "build":
-            assert "--network=none" in args
     for args in (a for a in calls if a[1] == "run"):
+        assert args[args.index("--platform") + 1] == "linux/amd64"
         assert args[args.index("--network") + 1] == ("bridge" if allow_network else "none")
         assert "--cap-drop=ALL" in args and "--security-opt=no-new-privileges" in args
         assert "CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never" in args
@@ -274,10 +301,35 @@ async def test_verifier_shell_preserves_image_virtualenv_path(tmp_path, monkeypa
     assert result.stdout == f"image virtualenv pytest\n{image_path}\n"
 
 
-@pytest.mark.parametrize("source", ["RUN true\n", "FROM first\nFROM second\n"])
-def test_deepswe_rejects_unexpected_verifier_image_stages(source):
-    with pytest.raises(ValueError, match="one DeepSWE Dockerfile stage"):
-        verifier_dockerfile(source, "inkling-verify-task:123")
+@pytest.mark.parametrize(
+    "original, replacement",
+    [
+        (f"FROM {UPSTREAM_IMAGE}", "FROM untrusted:image"),
+        (f"FROM {UPSTREAM_IMAGE}", ""),
+        ("COPY test.sh /tests/test.sh", "COPY . /tests/"),
+        ("COPY test.patch /tests/test.patch", "COPY test.patch /app/test.patch"),
+        ("COPY grader.py /tests/grader.py", ""),
+        ("RUN chmod +x /tests/test.sh", "RUN chmod +x /tests/test.sh && touch /extra"),
+        ("RUN chmod +x /tests/test.sh", "RUN chmod +x /tests/test.sh\nFROM other:image"),
+    ],
+)
+def test_deepswe_rejects_unexpected_verifier_recipe(deepswe_task, original, replacement):
+    recipe = deepswe_task / "tests/Dockerfile"
+    recipe.write_text(recipe.read_text().replace(original, replacement))
+    with pytest.raises(ValueError, match="Unexpected DeepSWE verifier Dockerfile"):
+        DeepSWESandbox(deepswe_task, deepswe_task / "result")
+
+
+@pytest.mark.parametrize("kind", ["missing", "symlink", "directory"])
+def test_deepswe_requires_regular_verifier_inputs(deepswe_task, kind):
+    path = deepswe_task / "tests/test.patch"
+    path.unlink()
+    if kind == "symlink":
+        path.symlink_to(deepswe_task / "tests/test.sh")
+    elif kind == "directory":
+        path.mkdir()
+    with pytest.raises(ValueError, match="verifier input must be a regular file"):
+        DeepSWESandbox(deepswe_task, deepswe_task / "result")
 
 
 def test_deepswe_image_pins_cover_the_upstream_revision_and_have_a_resume_identity():
@@ -329,23 +381,6 @@ async def test_image_tools_container_uses_native_platform(tmp_path, monkeypatch)
     sandbox = module.Container(tmp_path)
     await sandbox._start_container("python-tools:image", {"memory_mb": 8192})
     assert "--platform" not in calls[0]
-
-
-async def test_deepswe_verifier_cache_includes_solver_image(deepswe_task, tmp_path, monkeypatch):
-    calls = []
-
-    async def podman(*args, **kwargs):
-        calls.append(args)
-        return CommandResult("", "", 0, 0.1)
-
-    monkeypatch.setattr(module, "command", podman)
-    sandbox = DeepSWESandbox(deepswe_task, tmp_path)
-    sandbox.solver_image = "solver:first"
-    first = await sandbox._verifier_image()
-    sandbox.solver_image = "solver:second"
-    second = await sandbox._verifier_image()
-    assert first != second
-    assert len(calls) == 2
 
 
 async def test_command_bounds_output_while_draining_both_pipes():

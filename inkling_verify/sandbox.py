@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import math
 import re
+import shutil
 import time
 import tomllib
 import uuid
@@ -14,11 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
 
-from inkling_verify.deepswe_images import (
-    PLATFORM,
-    solver_image,
-    verifier_dockerfile,
-)
+from inkling_verify.deepswe_images import PLATFORM, solver_image
 
 
 @dataclass(frozen=True)
@@ -174,12 +170,29 @@ class Container:
 class DeepSWESandbox(Container):
     def __init__(self, task: Path, work_dir: Path, *, allow_network: bool = False):
         super().__init__(work_dir, allow_network=allow_network)
-        self.task = task
         self.config = tomllib.loads((task / "task.toml").read_text())
         memory_mb(self.config["environment"])
         memory_mb(self.config["verifier"]["environment"])
         self.base_commit: str | None = None
         self.solver_image = solver_image(self.config["environment"]["docker_image"])
+        self.verifier_files = tuple(
+            task / "tests" / name for name in ("test.sh", "test.patch", "grader.py", "config.json")
+        )
+        instructions = [
+            line.strip()
+            for line in (task / "tests/Dockerfile").read_text().splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        expected = [
+            f"FROM {self.config['environment']['docker_image']}",
+            *(f"COPY {path.name} /tests/{path.name}" for path in self.verifier_files),
+            "RUN chmod +x /tests/test.sh",
+        ]
+        if instructions != expected:
+            raise ValueError("Unexpected DeepSWE verifier Dockerfile recipe")
+        for path in self.verifier_files:
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f"DeepSWE verifier input must be a regular file: {path}")
 
     async def start(self) -> None:
         host = await self._podman("info", "--format", "{{.Host.Arch}}", timeout=30)
@@ -200,32 +213,6 @@ class DeepSWESandbox(Container):
         self.base_commit = baseline.stdout.strip()
         if not self.base_commit.startswith(self.config["metadata"]["base_commit_hash"]):
             raise RuntimeError("Pinned DeepSWE image does not match the task's base commit")
-
-    async def _verifier_image(self) -> str:
-        context = self.task / "tests"
-        digest = hashlib.sha256()
-        for path in sorted(context.rglob("*")):
-            if path.is_file():
-                digest.update(str(path.relative_to(context)).encode() + b"\0" + path.read_bytes())
-        recipe = verifier_dockerfile((context / "Dockerfile").read_text(), self.solver_image)
-        dockerfile = self.work_dir / "tests.Dockerfile"
-        dockerfile.write_text(recipe)
-        digest.update(recipe.encode())
-        image = "inkling-verify-task:" + digest.hexdigest()
-        result = await self._podman(
-            "build",
-            "--platform",
-            PLATFORM,
-            "--network=none",
-            "--tag",
-            image,
-            "--file",
-            str(dockerfile),
-            str(context),
-            timeout=float(self.config["verifier"]["environment"].get("build_timeout_sec", 1800)),
-        )
-        (self.work_dir / "verifier-build.log").write_text(result.stdout + result.stderr)
-        return image
 
     async def grade(self) -> tuple[float, dict[str, Any]]:
         await self._podman("restart", self.name)
@@ -263,8 +250,15 @@ class DeepSWESandbox(Container):
             raise RuntimeError("DeepSWE patch collection must produce a regular file")
         await self.close()
         self.name += "-verifier"
-        image = await self._verifier_image()
-        await self._start_container(image, verifier["environment"], platform=PLATFORM)
+        await self._start_container(self.solver_image, verifier["environment"], platform=PLATFORM)
+        tests = self.work_dir / "tests"
+        tests.mkdir()
+        tests.chmod(0o755)
+        for path in self.verifier_files:
+            shutil.copy2(path, tests / path.name)
+        test_script = tests / "test.sh"
+        test_script.chmod(test_script.stat().st_mode | 0o111)
+        await self._podman("cp", str(tests), self.name + ":/")
         await self._podman("cp", str(self.work_dir / "logs"), self.name + ":/")
         await self._podman("cp", str(candidate), self.name + ":/logs/artifacts/model.patch")
         return patch

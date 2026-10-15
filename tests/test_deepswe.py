@@ -73,22 +73,50 @@ async def test_limits_still_grade_committed_patch(
         ]
     )
     if limit == "timeout":
-        monkeypatch.setattr(deepswe, "AGENT_TIMEOUT_SECONDS", 0)
         generate = provider.generate
 
         async def wait_for_deadline(*args, **kwargs):
             await generate(*args, **kwargs)
-            await asyncio.sleep(0)
+            await asyncio.Event().wait()
             pytest.fail("Agent deadline did not cancel generation")
 
         monkeypatch.setattr(provider, "generate", wait_for_deadline)
-    result = await DeepSWE().evaluate(example, provider, Generation(30), tmp_path)
+    benchmark = DeepSWE(timeout_seconds=0.01) if limit == "timeout" else DeepSWE()
+    result = await benchmark.evaluate(example, provider, Generation(30), tmp_path)
     assert result.score == 1
     assert result.details["verifier_reward"] == 1
     assert result.details["stop_reason"] == ("max_tokens" if limit == "length" else limit)
     assert result.details["turns"] == len(provider.calls) == 1
     assert result.details["tool_calls"] == executed
     assert sandbox.commands == [("echo ok", None, 300)] * executed
+    assert sandbox.graded
+
+
+@pytest.mark.parametrize("timeout_seconds", [0, -1, float("inf"), float("nan"), True])
+def test_invalid_agent_deadline(timeout_seconds):
+    with pytest.raises(ValueError, match="positive and finite"):
+        DeepSWE(timeout_seconds=timeout_seconds)
+
+
+async def test_agent_deadline_excludes_setup_and_grading(task, tmp_path, monkeypatch):
+    example, sandbox = task
+    original_grade = sandbox.grade
+
+    async def enter(self):
+        await asyncio.sleep(0.02)
+        return self
+
+    async def grade():
+        await asyncio.sleep(0.02)
+        return await original_grade()
+
+    monkeypatch.setattr(type(sandbox), "__aenter__", enter)
+    monkeypatch.setattr(sandbox, "grade", grade)
+    result = await DeepSWE(timeout_seconds=0.01).evaluate(
+        example, Provider([reply("done")]), Generation(30), tmp_path
+    )
+    assert result.details["stop_reason"] == "stop"
+    assert result.score == 1
     assert sandbox.graded
 
 

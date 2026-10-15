@@ -99,6 +99,12 @@ def parser(
     evaluate.add_argument("--data-dir", type=Path, default=Path("data"))
     evaluate.add_argument("--output", type=Path, required=True)
     evaluate.add_argument("--concurrency", type=positive)
+    evaluate.add_argument(
+        "--samples-per-problem",
+        type=positive,
+        default=1,
+        help="independent attempts per problem, averaged in accuracy (default: %(default)s)",
+    )
     add_generation_arguments(evaluate)
     evaluate.add_argument(
         "--limit", type=positive, help="first N cases for a partial-dataset smoke test"
@@ -209,6 +215,7 @@ async def evaluate(
             args.output.resolve(),
             configuration=configuration,
             concurrency=args.concurrency or 64,
+            samples_per_problem=args.samples_per_problem,
             resume=args.resume,
             judge=judge,
         )

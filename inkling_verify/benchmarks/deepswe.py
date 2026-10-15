@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
 
 from inkling_verify.benchmarks import deepswe_data
-from inkling_verify.cli import evaluate, parser
+from inkling_verify.cli import evaluate, parser, positive
 from inkling_verify.deepswe_images import IMAGE_MANIFEST_SHA256
 from inkling_verify.sandbox import DeepSWESandbox
 from inkling_verify.tool_loop import run_tools
@@ -24,7 +25,7 @@ from inkling_verify.types import (
 
 MAX_TURNS = 4096
 MAX_TOOL_CALLS = 4096
-AGENT_TIMEOUT_SECONDS = 12 * 3600
+AGENT_TIMEOUT_SECONDS = 4 * 3600
 
 
 def bash_tool(*, allow_network: bool = False) -> Tool:
@@ -74,8 +75,17 @@ async def run_bash(sandbox: DeepSWESandbox, arguments: str) -> tuple[Text, ...]:
 class DeepSWE:
     name = cache_name = "deepswe"
 
-    def __init__(self, *, allow_network: bool = False):
+    def __init__(
+        self, *, allow_network: bool = False, timeout_seconds: float = AGENT_TIMEOUT_SECONDS
+    ):
+        if (
+            isinstance(timeout_seconds, bool)
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("timeout_seconds must be positive and finite")
         self.allow_network = allow_network
+        self.timeout_seconds = timeout_seconds
 
     def prepare(self, data_dir: Path) -> Path:
         return deepswe_data.prepare(data_dir)
@@ -104,7 +114,7 @@ class DeepSWE:
                 max_turns=MAX_TURNS,
                 max_tool_calls=MAX_TOOL_CALLS,
                 max_turn_tokens=generation.max_tokens,
-                timeout=AGENT_TIMEOUT_SECONDS,
+                timeout=self.timeout_seconds,
             )
             reward, grade = await sandbox.grade()
             return Evaluation(
@@ -126,6 +136,12 @@ def main() -> None:
     root, _, run = parser("deepswe")
     run.set_defaults(max_output_tokens=1_000_000, concurrency=4)
     run.add_argument(
+        "--timeout-seconds",
+        type=positive,
+        default=AGENT_TIMEOUT_SECONDS,
+        help="solver time limit in seconds; excludes setup and grading (default: %(default)s)",
+    )
+    run.add_argument(
         "--with-network",
         action="store_true",
         help="enable network access for both solver and grader (default: disabled)",
@@ -138,10 +154,10 @@ def main() -> None:
     else:
         asyncio.run(
             evaluate(
-                DeepSWE(allow_network=args.with_network),
+                DeepSWE(allow_network=args.with_network, timeout_seconds=args.timeout_seconds),
                 args,
                 benchmark_configuration={
-                    "agent_timeout_seconds": AGENT_TIMEOUT_SECONDS,
+                    "agent_timeout_seconds": args.timeout_seconds,
                     "image_manifest_sha256": IMAGE_MANIFEST_SHA256,
                     "allow_network": args.with_network,
                 },

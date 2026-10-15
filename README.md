@@ -27,11 +27,15 @@ and an Anthropic base URL.
 Each evaluation has `prepare` and `run` commands. Use `run --help` for options,
 `--limit N` for a smaller run, and `--resume` to continue an interrupted run.
 Scores are saved in `summary.json` under the output directory.
+Use `--samples-per-problem N` for repeated attempts (default: 1).
+Accuracy averages all attempts.
 
 ### DeepSWE
 
 113 coding tasks, graded by testing the model's committed patch in a fresh
 container. Networking is disabled by default; add `--with-network` to enable it.
+Each sample has a four-hour solve limit; override with `--timeout-seconds`.
+The example runs four samples per problem (452 attempts).
 
 DeepSWE requires a native x86-64 Podman host and uses pinned x86-64 images.
 
@@ -39,7 +43,7 @@ DeepSWE requires a native x86-64 Podman host and uses pinned x86-64 images.
 python -m inkling_verify.benchmarks.deepswe prepare
 python -m inkling_verify.benchmarks.deepswe run \
   --api openai-completions --model MODEL --base-url https://API_HOST/v1 \
-  --output results/deepswe
+  --samples-per-problem 4 --output results/deepswe
 ```
 
 ### MMMU-Pro
