@@ -1,0 +1,564 @@
+"""Exercise benchmark logic through each real SDK without contacting a model server."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import io
+import json
+import wave
+from contextlib import AsyncExitStack
+from functools import partial
+from unittest.mock import AsyncMock
+
+import pytest
+from PIL import Image
+
+from inkling_verify import python_tools
+from inkling_verify.benchmarks import deepswe, hle, mmau, niah
+from inkling_verify.benchmarks import mmmu_pro as mmmu
+from inkling_verify.benchmarks.deepswe import DeepSWE
+from inkling_verify.types import Example, Generation, Message, Text, ToolCall
+from inkling_verify.types import Image as DisplayImage
+
+APIS = ("openai-completions", "openai-responses", "anthropic")
+GENERATION = Generation(131072, temperature=None, top_p=None)
+
+
+@pytest.fixture
+def reply(response_body):
+    return partial(response_body, cached=False)
+
+
+def conversation(body, api):
+    return body["input"] if api == "openai-responses" else body["messages"]
+
+
+def user_text(body, api):
+    content = conversation(body, api)[-1]["content"]
+    if isinstance(content, str):
+        return content
+    return "".join(part["text"] for part in content if "text" in part)
+
+
+@pytest.fixture
+def mmau_example(tmp_path):
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(b"\x00\x00\x00\x40\x00\xc0")
+    wav = buffer.getvalue()
+    path = tmp_path / "sample.wav"
+    path.write_bytes(wav)
+    choices = ["dog barking", "cat meowing", "dog whining", "bird singing"]
+    return Example(
+        "audio-sample",
+        (Message("user", (Text(mmau.build_prompt("What is audible?", choices)),)),),
+        choices[0],
+        {
+            "task": "sound",
+            "choices": choices,
+            "audio_path": str(path),
+            "audio_sha256": hashlib.sha256(wav).hexdigest(),
+        },
+    ), wav
+
+
+@pytest.mark.parametrize("prediction, score", [("A dog is barking.", 1), ("cat meowing", 0)])
+async def test_mmau_chat_sends_exact_wav_and_scores_only_visible_text(
+    sdk_provider, reply, mmau_example, tmp_path, prediction, score
+):
+    example, wav = mmau_example
+    raw = reply("openai-completions", prediction)
+    raw["choices"][0]["message"]["reasoning_content"] = "cat meowing or dog barking"
+    provider, requests = sdk_provider("openai-completions", [raw])
+    async with provider:
+        result = await mmau.MMAU().evaluate(example, provider, GENERATION, tmp_path)
+        (tmp_path / "sample.wav").write_bytes(b"corrupted")
+        with pytest.raises(ValueError, match="Audio checksum mismatch"):
+            await mmau.MMAU().evaluate(example, provider, GENERATION, tmp_path)
+    assert result.score == score and result.answer == prediction
+    assert result.details["task"] == "sound"
+    assert len(requests) == 1
+    body = json.loads(requests[0].content)
+    assert body["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": example.messages[0].text},
+                {
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": base64.b64encode(wav).decode("ascii"),
+                        "format": "wav",
+                    },
+                },
+            ],
+        }
+    ]
+    assert "tools" not in body
+
+
+@pytest.mark.parametrize("api", ["openai-responses", "anthropic"])
+async def test_mmau_unsupported_audio_protocol_fails_before_http(
+    sdk_provider, mmau_example, tmp_path, api
+):
+    example, _ = mmau_example
+    provider, requests = sdk_provider(api, [])
+    async with provider:
+        with pytest.raises(ValueError, match="Audio input requires.*Chat Completions"):
+            await mmau.MMAU().evaluate(example, provider, GENERATION, tmp_path)
+    assert not requests
+
+
+@pytest.mark.parametrize("api", APIS)
+async def test_niah_uses_same_prompt_and_visible_answer_across_apis(
+    sdk_provider, reply, tmp_path, api
+):
+    target = "77986351-01ca-4fe3-af26-9e2c7b8b6d32"
+    prompt = niah.build_prompt([("key", target)], "key").encode()
+    path = tmp_path / "prompt.txt"
+    path.write_bytes(prompt)
+    example = Example(
+        "niah_uuid_key_to_value_2000_50_1234",
+        (),
+        target,
+        {
+            "prompt_path": str(path),
+            "prompt_sha256": hashlib.sha256(prompt).hexdigest(),
+            "context_length": 2000,
+            "depth_percent": 50,
+            "sample_index": 0,
+            "prompt_tokens": 70,
+            "target_key": "key",
+        },
+    )
+    provider, requests = sdk_provider(api, [reply(api, f"The value is:\n{target.upper()}")])
+    generation = Generation(128, 0.0, None, "none")
+    async with provider:
+        result = await niah.NIAH().evaluate(example, provider, generation, tmp_path)
+        path.write_bytes(b"corrupted")
+        with pytest.raises(ValueError, match="checksum"):
+            await niah.NIAH().evaluate(example, provider, generation, tmp_path)
+    assert result.score == 1 and result.answer == target.upper()
+    assert len(requests) == 1
+    body = json.loads(requests[0].content)
+    assert user_text(body, api) == prompt.decode()
+    assert "tools" not in body and "top_p" not in body
+    assert body["temperature"] == 0
+    if api == "openai-completions":
+        assert body["reasoning_effort"] == "none" and body["max_completion_tokens"] == 128
+    elif api == "openai-responses":
+        assert body["reasoning"] == {"effort": "none"} and body["max_output_tokens"] == 128
+    else:
+        assert body["thinking"] == {"type": "disabled"} and body["max_tokens"] == 128
+
+
+@pytest.mark.parametrize("api", APIS)
+@pytest.mark.parametrize(
+    "judge_api, generation, judge_generation, answer",
+    [
+        (None, Generation(262144, reasoning_effort="max"), hle.JUDGE_GENERATION, "Exact Answer: 4"),
+        (None, GENERATION, hle.JUDGE_GENERATION, ""),
+    ]
+    + [
+        (judge, GENERATION, settings, "Exact Answer: 4")
+        for judge in APIS
+        for settings in (hle.JUDGE_GENERATION, Generation(50, 0.5, 0.9, "low"))
+    ],
+)
+async def test_hle_generates_and_judges_across_apis(
+    sdk_provider, reply, tmp_path, api, judge_api, generation, judge_generation, answer
+):
+    verdict = {
+        "extracted_final_answer": "4",
+        "reasoning": "The answers match.",
+        "correct": "yes",
+        "confidence": 100,
+        "strict": True,
+    }
+    responses = [reply(api, answer)]
+    if judge_api is None:
+        responses.append(reply(api, json.dumps(verdict)))
+    candidate, candidate_requests = sdk_provider(
+        api,
+        responses,
+        model="candidate",
+        base_url="https://candidate.test/v1/",
+        api_key="candidate-key",
+    )
+    example = Example(
+        "math",
+        (
+            Message("system", (Text(hle.SYSTEM_PROMPTS["exactMatch"]),)),
+            Message("user", (Text("What is two plus two?"),)),
+        ),
+        "4",
+        {"question": "What is two plus two?"},
+    )
+    async with AsyncExitStack() as stack:
+        await stack.enter_async_context(candidate)
+        judge = None
+        judge_requests = candidate_requests
+        if judge_api is not None:
+            judge, judge_requests = sdk_provider(
+                judge_api,
+                [reply(judge_api, json.dumps(verdict))],
+                model="judge",
+                base_url="https://judge.test/v1/",
+                api_key="judge-key",
+            )
+            await stack.enter_async_context(judge)
+        result = await hle.HLE(judge_generation).evaluate(
+            example, candidate, generation, tmp_path, judge=judge
+        )
+    expected_judge = judge_generation
+    assert result.score == 1 and result.answer == "4"
+    assert result.details["verdict"] == verdict
+    assert result.details["judge_temperature"] == expected_judge.temperature
+    assert result.details["judge_top_p"] == expected_judge.top_p
+    assert len(candidate_requests) == (2 if judge_api is None else 1)
+    assert len(judge_requests) == (2 if judge_api is None else 1)
+    candidate_request, judge_request = candidate_requests[0], judge_requests[-1]
+    assert candidate_request.url.host == "candidate.test"
+    judge_name = "candidate" if judge_api is None else "judge"
+    assert judge_request.url.host == f"{judge_name}.test"
+    assert "candidate-key" in " ".join(candidate_request.headers.values())
+    assert f"{judge_name}-key" in " ".join(judge_request.headers.values())
+    if judge_api is not None:
+        assert "candidate-key" not in " ".join(judge_request.headers.values())
+    candidate_body = json.loads(candidate_request.content)
+    judge_body = json.loads(judge_request.content)
+    assert candidate_body["model"] == "candidate"
+    assert judge_body["model"] == judge_name
+    system = (
+        candidate_body["system"][0]["text"]
+        if api == "anthropic"
+        else conversation(candidate_body, api)[0]["content"]
+    )
+    assert system == hle.SYSTEM_PROMPTS["exactMatch"]
+    assert user_text(candidate_body, api) == example.metadata["question"]
+    assert user_text(judge_body, judge_api or api) == hle.JUDGE_PROMPT.format(
+        question=example.metadata["question"], response=answer, correct_answer="4"
+    )
+    for private_state in ("native reasoning", "opaque reasoning", "opaque signature"):
+        assert private_state not in json.dumps(judge_body)
+    judge_api = judge_api or api
+    messages = conversation(judge_body, judge_api)
+    assert [message["role"] for message in messages] == (
+        ["user"] if judge_api == "anthropic" else ["system", "user"]
+    )
+    system = judge_body["system"][0]["text"] if judge_api == "anthropic" else messages[0]["content"]
+    assert system == hle.SCHEMA_SYSTEM_INSTRUCTION
+    schema = (
+        judge_body["response_format"]["json_schema"]["schema"]
+        if judge_api == "openai-completions"
+        else judge_body["text"]["format"]["schema"]
+        if judge_api == "openai-responses"
+        else judge_body["output_config"]["format"]["schema"]
+    )
+    assert schema == hle.JUDGE_SCHEMA
+    for body, protocol, settings in (
+        (candidate_body, api, generation),
+        (judge_body, judge_api, expected_judge),
+    ):
+        assert "tools" not in body
+        for field in ("temperature", "top_p"):
+            value = getattr(settings, field)
+            if value is None:
+                assert field not in body
+            else:
+                assert body[field] == value
+        if protocol == "openai-completions":
+            assert body["reasoning_effort"] == settings.reasoning_effort
+            assert body["max_completion_tokens"] == settings.max_tokens
+        elif protocol == "openai-responses":
+            assert body["reasoning"] == {"effort": settings.reasoning_effort}
+            assert body["max_output_tokens"] == settings.max_tokens
+        else:
+            assert body["max_tokens"] == settings.max_tokens
+            if settings.reasoning_effort == "none":
+                assert body["thinking"] == {"type": "disabled"}
+            else:
+                assert body["thinking"] == {"type": "adaptive"}
+                assert body["output_config"]["effort"] == settings.reasoning_effort
+
+
+@pytest.mark.parametrize("api", APIS)
+@pytest.mark.parametrize(
+    "answer, expected, method",
+    [("The shape is a rectangle.\nAnswer: B", "B", "answer_prefix"), ("", "", "empty")],
+)
+async def test_mmmu_sends_original_png_and_scores_shared_parser(
+    sdk_provider, reply, tmp_path, api, answer, expected, method
+):
+    image_path = tmp_path / "question.png"
+    Image.new("RGB", (3, 2), color=(9, 18, 27)).save(image_path)
+    image_bytes = image_path.read_bytes() + (bytes(range(256)) * 43000 if answer else b"")
+    image_path.write_bytes(image_bytes)
+    example = Example(
+        "vision",
+        (Message("user", (Text("<image 1>" + mmmu.PROMPT),)),),
+        "B",
+        {
+            "images": {
+                "image_1": {
+                    "image_path": str(image_path),
+                    "image_sha256": hashlib.sha256(image_bytes).hexdigest(),
+                }
+            },
+            "options": {"A": "triangle", "B": "rectangle"},
+        },
+    )
+    provider, requests = sdk_provider(
+        api,
+        [reply(api, answer)],
+        model="candidate",
+        base_url="https://candidate.test/v1/",
+        api_key="test-key",
+    )
+    async with provider:
+        result = await mmmu.MMMUPro().evaluate(example, provider, GENERATION, tmp_path)
+    assert result.score == (expected == "B") and result.answer == expected
+    assert result.details["parse_method"] == method
+    assert len(requests) == 1
+    body = json.loads(requests[0].content)
+    assert "tools" not in body
+    parts = conversation(body, api)[0]["content"]
+    assert len(parts) == 2
+    assert parts[1]["text"] == mmmu.PROMPT
+    if api == "openai-completions":
+        encoded = parts[0]["image_url"]["url"].split(",", 1)[1]
+    elif api == "openai-responses":
+        encoded = parts[0]["image_url"].split(",", 1)[1]
+    else:
+        encoded = parts[0]["source"]["data"]
+    assert base64.b64decode(encoded) == image_bytes
+
+
+@pytest.mark.parametrize("api", APIS)
+@pytest.mark.parametrize("tool_text", ["I will inspect the repository.", None])
+async def test_deepswe_native_tool_loop_and_grading(
+    code_sandbox, sdk_provider, reply, tmp_path, api, tool_text
+):
+    first_response = reply(api, tool_text, tools=("pwd", "printf fixed"))
+    provider, requests = sdk_provider(
+        api,
+        [first_response, reply(api, "Fixed.")],
+        model="candidate",
+        base_url="https://candidate.test/v1/",
+        api_key="test-key",
+    )
+    example = Example(
+        "fix",
+        (Message("user", (Text("Fix the defect."),)),),
+        "",
+        {
+            "task_dir": str(tmp_path),
+            "suite": "deepswe",
+        },
+    )
+    async with provider:
+        result = await DeepSWE().evaluate(example, provider, GENERATION, tmp_path)
+    assert result.score == 1 and result.answer == "Fixed."
+    assert result.details["turns"] == 2 and result.details["tool_calls"] == 2
+    assert result.details["generated_tokens"] == 10
+    assert code_sandbox.commands == [("pwd", None, 300), ("printf fixed", None, 300)]
+    assert code_sandbox.graded
+    bodies = [json.loads(request.content) for request in requests]
+    assert len(bodies) == 2
+    expected_tool = deepswe.bash_tool()
+    for body in bodies:
+        tool = body["tools"][0]
+        if api == "openai-completions":
+            tool = tool["function"]
+        assert tool["name"] == expected_tool.name
+        assert tool["description"] == expected_tool.description
+        assert (
+            tool["input_schema" if api == "anthropic" else "parameters"] == expected_tool.parameters
+        )
+    messages = conversation(bodies[1], api)
+    if api == "openai-completions":
+        assert messages[1] == first_response["choices"][0]["message"]
+        results = [(message["tool_call_id"], message["content"]) for message in messages[2:]]
+        budget = bodies[1]["max_completion_tokens"]
+    elif api == "openai-responses":
+        end = 1 + len(first_response["output"])
+        assert messages[1:end] == first_response["output"]
+        results = [(message["call_id"], message["output"]) for message in messages[end:]]
+        budget = bodies[1]["max_output_tokens"]
+    else:
+        assert messages[1]["content"] == first_response["content"]
+        assert len(messages) == 3
+        results = [(block["tool_use_id"], block["content"]) for block in messages[2]["content"]]
+        budget = bodies[1]["max_tokens"]
+    assert budget == GENERATION.max_tokens - 5
+    assert [call_id for call_id, _ in results] == ["call_1", "call_2"]
+    assert [json.loads(content)["stdout"] for _, content in results] == ["/repo", "fixed"]
+
+
+@pytest.mark.parametrize("api", APIS)
+async def test_deepswe_nul_command_returns_tool_error_and_continues(
+    code_sandbox, sdk_provider, reply, tmp_path, api
+):
+    invalid = "printf 'prefix\x00suffix'"
+    provider, requests = sdk_provider(
+        api, [reply(api, None, tools=(invalid, "pwd")), reply(api, "Fixed.")]
+    )
+    example = Example("nul", (), "", {"task_dir": str(tmp_path), "suite": "deepswe"})
+    async with provider:
+        result = await DeepSWE().evaluate(example, provider, GENERATION, tmp_path)
+    assert code_sandbox.commands == [("pwd", None, 300)]
+    assert code_sandbox.graded and result.score == 1
+    assert result.details["turns"] == 2 and result.details["tool_calls"] == 2
+    second_request = json.loads(requests[1].content)
+    assert "command contains a NUL character; command was not executed" in json.dumps(
+        second_request
+    )
+
+
+@pytest.mark.parametrize("field", ["command", "workdir"])
+async def test_bash_rejects_nul_arguments_without_changing_valid_escapes(code_sandbox, field):
+    args = {"command": r"printf '\\0'", "workdir": "/repo"}
+    original = args.copy()
+    args[field] += "\x00"
+    result = await deepswe.run_bash(code_sandbox, json.dumps(args))
+    assert json.loads(result[0].text) == {
+        "error": f"{field} contains a NUL character; command was not executed"
+    }
+    assert code_sandbox.commands == []
+    await deepswe.run_bash(code_sandbox, json.dumps(original))
+    assert code_sandbox.commands == [(original["command"], "/repo", 300)]
+
+
+@pytest.mark.parametrize("api", APIS)
+@pytest.mark.parametrize("subset", ["standard-4", "standard-10"])
+async def test_mmmu_standard_interleaved_images_across_apis(
+    sdk_provider, reply, tmp_path, api, subset
+):
+    image_path = tmp_path / "question.png"
+    Image.new("RGB", (3, 2), color=(9, 18, 27)).save(image_path)
+    image_bytes = image_path.read_bytes()
+    example = Example(
+        "standard",
+        (Message("user", (Text("First <image 2> then <image 2> choose."),)),),
+        "B",
+        {
+            "images": {
+                "image_2": {
+                    "image_path": str(image_path),
+                    "image_sha256": hashlib.sha256(image_bytes).hexdigest(),
+                }
+            },
+            "options": {"A": "triangle", "B": "rectangle"},
+        },
+    )
+    provider, requests = sdk_provider(api, [reply(api, "Answer: B")])
+    async with provider:
+        result = await mmmu.MMMUPro(subset).evaluate(example, provider, GENERATION, tmp_path)
+    assert result.score == 1
+    parts = conversation(json.loads(requests[0].content), api)[0]["content"]
+    assert [part["text"] for part in parts if "text" in part] == ["First ", " then ", " choose."]
+    for index in (1, 3):
+        if api == "openai-completions":
+            encoded = parts[index]["image_url"]["url"].split(",", 1)[1]
+        elif api == "openai-responses":
+            encoded = parts[index]["image_url"].split(",", 1)[1]
+        else:
+            encoded = parts[index]["source"]["data"]
+        assert base64.b64decode(encoded) == image_bytes
+
+
+@pytest.mark.parametrize("api", APIS)
+@pytest.mark.parametrize("subset", mmmu.SUBSETS)
+async def test_mmmu_tools_multi_turn_images_and_scoring(
+    monkeypatch, sdk_provider, reply, tmp_path, api, subset
+):
+    image_path = tmp_path / "question.png"
+    Image.new("RGB", (3, 2), color=(9, 18, 27)).save(image_path)
+    image_bytes = image_path.read_bytes()
+    image_record = {
+        "image_path": str(image_path),
+        "image_sha256": hashlib.sha256(image_bytes).hexdigest(),
+    }
+    example = Example(
+        "with-tools",
+        (
+            Message(
+                "user",
+                (Text("<image 1>" + mmmu.PROMPT if subset == "vision" else "Read <image 1>."),),
+            ),
+        ),
+        "B",
+        {"options": {"A": "triangle", "B": "rectangle"}, "images": {"image_1": image_record}},
+    )
+    calls = [
+        ToolCall("crop", "ipython", json.dumps({"code": "display(image)"})),
+        ToolCall("measure", "ipython", json.dumps({"code": "image.size"})),
+    ]
+    executed, closed = [], []
+
+    class PythonSandbox(python_tools.PythonSandbox):
+        async def __aenter__(self):
+            self.work_dir.mkdir(parents=True, exist_ok=True)
+            self._podman = AsyncMock()
+            return self
+
+        async def __aexit__(self, *args):
+            closed.append(True)
+
+        async def execute(self, arguments):
+            executed.append(arguments)
+            return (
+                (DisplayImage(image_bytes, "image/png"),)
+                if len(executed) == 1
+                else (Text("(3, 2)"),)
+            )
+
+    monkeypatch.setattr(python_tools, "PythonSandbox", PythonSandbox)
+    provider, requests = sdk_provider(
+        api,
+        [
+            reply(api, None, tools=(calls[0],)),
+            reply(api, None, tools=(calls[1],)),
+            reply(api, "Answer: B"),
+        ],
+    )
+    benchmark = mmmu.MMMUPro(subset, with_tools=True)
+    generation = Generation(131075)
+    async with provider:
+        result = await benchmark.evaluate(example, provider, generation, tmp_path)
+    assert executed == [call.arguments for call in calls] and closed == [True]
+    assert result.score == 1 and result.answer == "B"
+    assert result.details == {
+        "parse_method": "answer_prefix",
+        "stop_reason": "stop",
+        "turns": 3,
+        "tool_calls": 2,
+        "generated_tokens": 15,
+        "with_tools": True,
+        "allow_network": False,
+        "token_budget_kind": "cumulative_generated_tokens",
+    }
+    bodies = [json.loads(request.content) for request in requests]
+    assert len(bodies) == 3
+    budget_key = {
+        "openai-completions": "max_completion_tokens",
+        "openai-responses": "max_output_tokens",
+        "anthropic": "max_tokens",
+    }[api]
+    assert [body[budget_key] for body in bodies] == [131072, 131070, 131065]
+    first = bodies[0]
+    system = (
+        first["system"][0]["text"] if api == "anthropic" else conversation(first, api)[0]["content"]
+    )
+    assert system == python_tools.SYSTEM_PROMPT
+    assert "/sandbox/images/image_0.png" in json.dumps(first)
+    for body in bodies:
+        tool = body["tools"][0]
+        assert (tool["function"] if api == "openai-completions" else tool)["name"] == "ipython"
+    encoded = base64.b64encode(image_bytes).decode()
+    assert [json.dumps(body).count(encoded) for body in bodies] == [1, 2, 2]
+    assert "(3, 2)" in json.dumps(bodies[2])

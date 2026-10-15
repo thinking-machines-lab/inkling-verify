@@ -1,0 +1,17 @@
+{
+  "source_revision": "36021bdfd81a22d1671ff7245d85b2e76defbdaf",
+  "source_path": "python/sglang/tml/evals/niah.py",
+  "source_sha256": "2c0c9fd3677581a52863ebf1a88c8b8d2df18c7fd65996b3f599f73bc9b1cb54",
+  "tokenizer": "WordLevel([UNK]:0) with Whitespace pre-tokenizer",
+  "contexts": [512, 1024],
+  "depths": [0, 50, 100],
+  "samples_per_cell": 1,
+  "cases": [
+    {"id": "niah_uuid_key_to_value_512_0_2730243887", "context_length": 512, "depth_percent": 0, "sample_index": 0, "expected": "972a8469-1641-4f82-8b9d-2434e465e150", "target_key": "bd9c66b3-ad3c-4d6d-9a3d-1fa7bc8960a9", "prompt_tokens": 376, "budgeted_total_tokens": 504, "num_haystack_lines": 11, "prompt_sha256": "7c78fee7c6c8df7f9db53dbd194e074d033b73e503a6e9b3315c1cd38bc3a657"},
+    {"id": "niah_uuid_key_to_value_512_50_2010258946", "context_length": 512, "depth_percent": 50, "sample_index": 0, "expected": "ea1fca65-e27a-484d-a548-21d07fcd9eb1", "target_key": "a7cad415-366e-416f-908e-bad7b7c93acf", "prompt_tokens": 376, "budgeted_total_tokens": 504, "num_haystack_lines": 11, "prompt_sha256": "ebf73ffbf63ec9d9bde111f0750ea72355e302793db36d16353dbb38e62783ef"},
+    {"id": "niah_uuid_key_to_value_512_100_909666337", "context_length": 512, "depth_percent": 100, "sample_index": 0, "expected": "f6e07cc0-6c52-449f-9b49-bd26df57c59a", "target_key": "8715a103-43da-4043-aa45-c2ab8cbfedb0", "prompt_tokens": 376, "budgeted_total_tokens": 504, "num_haystack_lines": 11, "prompt_sha256": "24010fcfadc59b5c0f38169d2ab19feae9c0596a318bd15ec4a08f8eb41de2ab"},
+    {"id": "niah_uuid_key_to_value_1024_0_1299301222", "context_length": 1024, "depth_percent": 0, "sample_index": 0, "expected": "847fd9b4-e64d-4bcb-b027-53a15f987c71", "target_key": "a65e688e-abf3-4d39-bec2-1bbe66245bfa", "prompt_tokens": 880, "budgeted_total_tokens": 1008, "num_haystack_lines": 29, "prompt_sha256": "c2f92d8c3875d2889b8124db9bfba4f6727ff7b1a6bf9c266a9d61f60bd10b2a"},
+    {"id": "niah_uuid_key_to_value_1024_50_546696950", "context_length": 1024, "depth_percent": 50, "sample_index": 0, "expected": "bc2cbb0d-dd33-4cc7-ab7f-089acd5f4822", "target_key": "696608aa-ee49-4329-884a-7b28550a1b46", "prompt_tokens": 880, "budgeted_total_tokens": 1008, "num_haystack_lines": 29, "prompt_sha256": "dc0e1895ebefc9204ad1fac5e7a956b259c0da0e4153649cd2728af9414a89f2"},
+    {"id": "niah_uuid_key_to_value_1024_100_3723098211", "context_length": 1024, "depth_percent": 100, "sample_index": 0, "expected": "22bd3388-6db9-4102-a48b-3dbe157d94a1", "target_key": "06f028ff-a9ba-4a27-907b-fe36978648f8", "prompt_tokens": 880, "budgeted_total_tokens": 1008, "num_haystack_lines": 29, "prompt_sha256": "f05c8b26df58d98db6d1a034cc44e32f403ec9e8b182472021e227c91a94aaa5"}
+  ]
+}

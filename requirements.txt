@@ -1,0 +1,9 @@
+openai>=3.3.0,<4
+anthropic>=0.125,<1
+datasets>=4,<5
+huggingface-hub>=0.34,<2
+jsonschema>=4.23,<5
+pillow>=11,<13
+tokenizers>=0.22,<1
+librosa>=0.11,<0.12
+soundfile>=0.13,<0.14
