@@ -106,6 +106,7 @@ class Container:
     async def _start_container(
         self, image: str, environment: dict[str, Any], *, platform: str | None = None
     ) -> None:
+        self._active = True
         await self._podman(
             "run",
             *(["--platform", platform] if platform else []),
@@ -129,12 +130,22 @@ class Container:
             "-c",
             "while :; do sleep 3600; done",
         )
-        self._active = True
 
     async def close(self) -> None:
         if self._active:
-            await self._podman("rm", "--force", self.name, timeout=60)
+            removal = asyncio.create_task(
+                self._podman("rm", "--force", "--ignore", "--time=0", self.name, timeout=60)
+            )
+            cancelled = None
+            while not removal.done():
+                try:
+                    await asyncio.shield(removal)
+                except asyncio.CancelledError as error:
+                    cancelled = error
+            removal.result()
             self._active = False
+            if cancelled is not None:
+                raise cancelled
 
     async def run(
         self,

@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import sys
@@ -239,7 +240,7 @@ async def test_deepswe_isolates_solver_and_verifier(
         assert len(runs) == 2
         assert all(PINNED_IMAGE in run for run in runs)
         assert "--cpus=3" in runs[1] and "--memory=12288m" in runs[1]
-        remove = calls.index(("podman", "rm", "--force", solver))
+        remove = calls.index(("podman", "rm", "--force", "--ignore", "--time=0", solver))
         assert remove < calls.index(runs[1])
         test_names = ("test.sh", "test.patch", "grader.py", "config.json")
         assert copied_tests == {
@@ -273,7 +274,7 @@ async def test_deepswe_isolates_solver_and_verifier(
         assert "TERM=xterm-256color" in args
         assert not any(flag.startswith(("--mount", "--volume", "--privileged")) for flag in args)
         name = args[args.index("--name") + 1]
-        assert ("podman", "rm", "--force", name) in calls
+        assert ("podman", "rm", "--force", "--ignore", "--time=0", name) in calls
     if not failure:
         grading = next(a for a in calls if a[-1].endswith("bash /tests/test.sh"))
         assert grading[-3:-1] == ("bash", "-c")
@@ -381,6 +382,100 @@ async def test_image_tools_container_uses_native_platform(tmp_path, monkeypatch)
     sandbox = module.Container(tmp_path)
     await sandbox._start_container("python-tools:image", {"memory_mb": 8192})
     assert "--platform" not in calls[0]
+
+
+@pytest.mark.parametrize("cancel_again", [False, True])
+async def test_sibling_failure_does_not_interrupt_container_removal(
+    tmp_path, monkeypatch, cancel_again
+):
+    sandboxes = [module.Container(tmp_path / str(index)) for index in range(2)]
+    slow_removal_started = asyncio.Event()
+    release_removal = asyncio.Event()
+    first_finished = asyncio.Event()
+    removed = set()
+    slow_task = None
+
+    async def podman(*args, **kwargs):
+        if args[1] == "info":
+            return CommandResult("true", "", 0, 0)
+        if args[1] == "rm":
+            if args[-1] == sandboxes[0].name:
+                await slow_removal_started.wait()
+            else:
+                slow_removal_started.set()
+                await release_removal.wait()
+            removed.add(args[-1])
+        return CommandResult("", "", 0, 0)
+
+    monkeypatch.setattr(module, "command", podman)
+    for sandbox in sandboxes:
+
+        async def start(sandbox=sandbox):
+            await sandbox._start_container("fixture:image", {"memory_mb": 8192})
+
+        sandbox.start = start
+
+    async def evaluate(sandbox):
+        async with sandbox:
+            raise RuntimeError("API unavailable")
+
+    async def evaluate_all():
+        nonlocal slow_task
+        async with asyncio.TaskGroup() as tasks:
+            first = tasks.create_task(evaluate(sandboxes[0]))
+            first.add_done_callback(lambda _: first_finished.set())
+            slow_task = tasks.create_task(evaluate(sandboxes[1]))
+
+    evaluation = asyncio.create_task(evaluate_all())
+    try:
+        await asyncio.wait_for(first_finished.wait(), 1)
+        await asyncio.sleep(0)
+        if cancel_again:
+            assert slow_task is not None
+            slow_task.cancel()
+            await asyncio.sleep(0)
+    finally:
+        release_removal.set()
+        with pytest.raises(ExceptionGroup, match="TaskGroup"):
+            await asyncio.wait_for(evaluation, 1)
+    assert slow_task is not None and slow_task.cancelled()
+    assert removed == {sandbox.name for sandbox in sandboxes}
+    assert all(not sandbox._active for sandbox in sandboxes)
+
+
+@pytest.mark.parametrize("failure", ["cancelled", "failed"])
+async def test_interrupted_start_removes_partial_container(tmp_path, monkeypatch, failure):
+    sandbox = module.Container(tmp_path)
+    started = asyncio.Event()
+    containers = set()
+
+    async def podman(*args, **kwargs):
+        if args[1] == "info":
+            return CommandResult("true", "", 0, 0)
+        if args[1] == "run":
+            containers.add(sandbox.name)
+            started.set()
+            if failure == "cancelled":
+                await asyncio.Event().wait()
+            return CommandResult("", "startup failed", 1, 0)
+        if args[1] == "rm":
+            containers.discard(args[-1])
+        return CommandResult("", "", 0, 0)
+
+    async def start():
+        await sandbox._start_container("fixture:image", {"memory_mb": 8192})
+
+    monkeypatch.setattr(module, "command", podman)
+    sandbox.start = start
+    entering = asyncio.create_task(sandbox.__aenter__())
+    await asyncio.wait_for(started.wait(), 1)
+    if failure == "cancelled":
+        entering.cancel()
+    error = asyncio.CancelledError if failure == "cancelled" else RuntimeError
+    with pytest.raises(error):
+        await entering
+    assert not containers
+    assert not sandbox._active
 
 
 async def test_command_bounds_output_while_draining_both_pipes():
