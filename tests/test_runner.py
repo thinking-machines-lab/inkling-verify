@@ -204,6 +204,7 @@ async def test_completed_resume_makes_no_calls_and_has_zero_session_throughput(e
 @pytest.mark.parametrize(
     "change",
     [
+        "benchmark",
         "api",
         "model",
         "base_url",
@@ -232,8 +233,11 @@ async def test_resume_rejects_changed_workload(execute, change):
     }
     examples = [example("one"), example("two")]
     generation = GENERATION
-    await execute(OnceBenchmark(), examples, provider, configuration=configuration)
-    if change in ("api", "model", "base_url"):
+    benchmark = OnceBenchmark()
+    await execute(benchmark, examples, provider, configuration=configuration)
+    if change == "benchmark":
+        benchmark.name = "different"
+    elif change in ("api", "model", "base_url"):
         configuration = configuration | {change: "different"}
     elif change == "dataset":
         configuration = configuration | {
@@ -255,7 +259,7 @@ async def test_resume_rejects_changed_workload(execute, change):
         configuration = configuration | {"judge": configuration["judge"] | {field: value}}
     with pytest.raises(ValueError, match="identical"):
         await execute(
-            OnceBenchmark(),
+            benchmark,
             examples,
             provider,
             configuration=configuration,

@@ -1,4 +1,4 @@
-"""Text-only Humanity's Last Exam without tools, with self-judging or a separate judge."""
+"""Text-only Humanity's Last Exam with self-judging or a separate judge."""
 
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ import jsonschema
 from inkling_verify.benchmarks.data import read_cache, required_text, write_cache
 from inkling_verify.cli import (
     add_api_arguments,
+    add_generation_arguments,
     evaluate,
-    optional_float,
+    generation_settings,
     parser,
-    positive,
 )
 from inkling_verify.types import (
     Evaluation,
@@ -32,7 +32,6 @@ from inkling_verify.types import (
 REPOSITORY = "cais/hle"
 REVISION = "5a81a4c7271a2a2a312b9a690f0c2fde837e4c29"
 EXPECTED_COUNT = 2158
-DATASET_NAME = "hle-self-judge"
 SYSTEM_PROMPTS = {
     "exactMatch": """Your response should be in the following format:
 Explanation: {your explanation for your final answer}
@@ -119,8 +118,7 @@ def _prepare_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 class HLE:
-    name = "hle"
-    cache_name = DATASET_NAME
+    name = cache_name = "hle"
 
     def __init__(self, judge_generation: Generation = JUDGE_GENERATION) -> None:
         self.judge_generation = judge_generation
@@ -128,7 +126,7 @@ class HLE:
     def prepare(self, data_dir: Path) -> None:
         from datasets import load_dataset
 
-        destination = data_dir / DATASET_NAME
+        destination = data_dir / self.cache_name
         if destination.exists():
             self.load(data_dir)
             return
@@ -138,14 +136,17 @@ class HLE:
         if len(rows) != EXPECTED_COUNT or len({row["id"] for row in rows}) != EXPECTED_COUNT:
             raise ValueError(f"Expected {EXPECTED_COUNT} distinct text-only HLE examples")
         with tempfile.TemporaryDirectory(prefix="hle-prepare-", dir=data_dir) as temporary:
-            staging = Path(temporary) / DATASET_NAME
+            staging = Path(temporary) / self.cache_name
             staging.mkdir()
             write_cache(staging, rows, repository=REPOSITORY, revision=REVISION)
             staging.rename(destination)
 
     def load(self, data_dir: Path) -> list[Example]:
         rows = read_cache(
-            data_dir / DATASET_NAME, repository=REPOSITORY, revision=REVISION, count=EXPECTED_COUNT
+            data_dir / self.cache_name,
+            repository=REPOSITORY,
+            revision=REVISION,
+            count=EXPECTED_COUNT,
         )
         examples = []
         for row in rows:
@@ -234,39 +235,13 @@ def judge_settings(args: argparse.Namespace) -> tuple[argparse.Namespace | None,
             base_url=args.judge_base_url or (args.base_url if same_api else None),
             api_key_env=args.judge_api_key_env or (args.api_key_env if same_api else None),
         )
-    generation = Generation(
-        max_tokens=args.judge_max_output_tokens,
-        temperature=args.judge_temperature,
-        top_p=args.judge_top_p,
-        reasoning_effort=(
-            None if args.judge_reasoning_effort == "default" else args.judge_reasoning_effort
-        ),
-    )
-    if generation.top_p is not None and not 0 < generation.top_p <= 1:
-        raise ValueError("judge-top-p must be in (0, 1], or 'none'")
-    return judge_args, generation
+    return judge_args, generation_settings(args, prefix="judge-")
 
 
 def main() -> None:
-    root, _, run_parser = parser("HLE without tools")
+    root, _, run_parser = parser("HLE")
     add_api_arguments(run_parser, prefix="judge-")
-    run_parser.add_argument(
-        "--judge-max-output-tokens", type=positive, default=JUDGE_GENERATION.max_tokens
-    )
-    run_parser.add_argument(
-        "--judge-temperature",
-        type=optional_float,
-        default=JUDGE_GENERATION.temperature,
-        metavar="FLOAT|none",
-    )
-    run_parser.add_argument(
-        "--judge-top-p", type=optional_float, default=JUDGE_GENERATION.top_p, metavar="FLOAT|none"
-    )
-    run_parser.add_argument(
-        "--judge-reasoning-effort",
-        choices=("default", "none", "low", "medium", "high", "max"),
-        default=JUDGE_GENERATION.reasoning_effort,
-    )
+    add_generation_arguments(run_parser, prefix="judge-", defaults=JUDGE_GENERATION)
     args = root.parse_args()
     if args.command == "prepare":
         HLE().prepare(args.data_dir.resolve())

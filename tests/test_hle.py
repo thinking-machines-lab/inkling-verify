@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from inkling_verify.benchmarks import hle_no_tools as hle
-from inkling_verify.benchmarks.hle_no_tools import (
+from inkling_verify.benchmarks import hle
+from inkling_verify.benchmarks.hle import (
     HLE,
     JUDGE_PROMPT,
     SCHEMA_SYSTEM_INSTRUCTION,
@@ -129,7 +129,7 @@ def test_prepare_load_filters_images_preserves_prompts_and_reuses_pinned_cache(
             "category": row["category"],
             "answer_type": row["answer_type"],
         }
-    assert (tmp_path / "hle-self-judge" / "manifest.json").is_file()
+    assert (tmp_path / "hle" / "manifest.json").is_file()
     benchmark.prepare(tmp_path)
     assert benchmark.load(tmp_path) == examples
     assert calls == [(hle.REPOSITORY, "test", hle.REVISION)]

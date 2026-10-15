@@ -23,25 +23,22 @@ class CellResult(TypedDict):
     stdout: str
     stderr: str
     exit_code: int
-    exec_count: int
     result_repr: str | None
     images: list[str]
 
 
 NS: dict[str, object] = {"__name__": "__main__"}
-_exec_count = 0
 MAX_IMAGES_PER_CELL = 8
 MAX_IMAGE_DIM = 8192
 MAX_TOTAL_IMAGE_BYTES = 32 * 1024 * 1024
-MAX_TEXT_FIELD_CHARS = 4 * 1024 * 1024
+MAX_TEXT_FIELD_CHARS = 16384
 _CAPTURED: list[str] = []
 _captured_bytes = 0
 
 
-def _truncate_text(text: str, limit: int) -> str:
-    cap = MAX_TEXT_FIELD_CHARS if not limit or limit <= 0 else min(limit, MAX_TEXT_FIELD_CHARS)
-    if len(text) > cap:
-        return text[:cap] + "\n... [output truncated]"
+def _truncate_text(text: str) -> str:
+    if len(text) > MAX_TEXT_FIELD_CHARS:
+        return text[:MAX_TEXT_FIELD_CHARS] + "\n... [output truncated]"
     return text
 
 
@@ -167,9 +164,8 @@ def _sweep_matplotlib() -> bool:
     return failed
 
 
-def run_cell(code: str, timeout: float, max_output_bytes: int = 0) -> CellResult:
-    global _exec_count, _captured_bytes
-    _exec_count += 1
+def run_cell(code: str, timeout: float) -> CellResult:
+    global _captured_bytes
     _CAPTURED.clear()
     _captured_bytes = 0
     out, err = (io.StringIO(), io.StringIO())
@@ -205,13 +201,10 @@ def run_cell(code: str, timeout: float, max_output_bytes: int = 0) -> CellResult
         finally:
             sys.stdout, sys.stderr = (real_out, real_err)
     return {
-        "stdout": _truncate_text(out.getvalue(), max_output_bytes),
-        "stderr": _truncate_text(err.getvalue(), max_output_bytes),
+        "stdout": _truncate_text(out.getvalue()),
+        "stderr": _truncate_text(err.getvalue()),
         "exit_code": exit_code,
-        "exec_count": _exec_count,
-        "result_repr": _truncate_text(result_repr, max_output_bytes)
-        if result_repr is not None
-        else None,
+        "result_repr": _truncate_text(result_repr) if result_repr is not None else None,
         "images": list(_CAPTURED),
     }
 
@@ -225,7 +218,7 @@ def main() -> None:
     wire.write('{"ready": true}\n')
     for line in sys.stdin:
         request = json.loads(line)
-        result = run_cell(request["code"], request["timeout"], request["max_output_bytes"])
+        result = run_cell(request["code"], request["timeout"])
         wire.write(json.dumps(result) + "\n")
 
 

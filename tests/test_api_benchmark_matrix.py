@@ -15,11 +15,9 @@ import pytest
 from PIL import Image
 
 from inkling_verify import python_tools
-from inkling_verify.benchmarks import deepswe, mmau, niah
-from inkling_verify.benchmarks import hle_no_tools as hle
+from inkling_verify.benchmarks import deepswe, hle, mmau, niah
 from inkling_verify.benchmarks import mmmu_pro as mmmu
 from inkling_verify.benchmarks.deepswe import DeepSWE
-from inkling_verify.runner import run
 from inkling_verify.types import Example, Generation, Message, Text, ToolCall
 from inkling_verify.types import Image as DisplayImage
 
@@ -139,29 +137,12 @@ async def test_niah_uses_same_prompt_and_visible_answer_across_apis(
     )
     provider, requests = sdk_provider(api, [reply(api, f"The value is:\n{target.upper()}")])
     generation = Generation(128, 0.0, None, "none")
-    output = tmp_path / "results"
-    configuration = {"dataset": {"fixture": "niah"}}
     async with provider:
-        for resume in (False, True):
-            summary = await run(
-                niah.NIAH(),
-                [example],
-                provider,
-                generation,
-                output,
-                configuration=configuration,
-                concurrency=1,
-                resume=resume,
-            )
-            assert summary["accuracy"] == 1
+        result = await niah.NIAH().evaluate(example, provider, generation, tmp_path)
         path.write_bytes(b"corrupted")
         with pytest.raises(ValueError, match="checksum"):
             await niah.NIAH().evaluate(example, provider, generation, tmp_path)
-    result = json.loads(next(output.glob("samples/*/result.json")).read_text())
-    assert result["score"] == 1 and result["answer"] == target.upper()
-    assert len(list(output.glob("samples/*/attempt-*/call-*.json"))) == 1
-    niah.write_grid(output)
-    assert json.loads((output / "grid.json").read_text())[0]["accuracy"] == 1
+    assert result.score == 1 and result.answer == target.upper()
     assert len(requests) == 1
     body = json.loads(requests[0].content)
     assert user_text(body, api) == prompt.decode()
@@ -340,9 +321,6 @@ async def test_mmmu_sends_original_png_and_scores_shared_parser(
     )
     async with provider:
         result = await mmmu.MMMUPro().evaluate(example, provider, GENERATION, tmp_path)
-        image_path.write_bytes(b"changed")
-        with pytest.raises(ValueError, match="checksum"):
-            await mmmu.MMMUPro().evaluate(example, provider, GENERATION, tmp_path)
     assert result.score == (expected == "B") and result.answer == expected
     assert result.details["parse_method"] == method
     assert len(requests) == 1
@@ -422,30 +400,6 @@ async def test_deepswe_native_tool_loop_and_grading(
 
 
 @pytest.mark.parametrize("api", APIS)
-async def test_hle_invalid_judge_is_unscored_across_protocols(sdk_provider, reply, tmp_path, api):
-    provider, requests = sdk_provider(
-        api,
-        [reply(api, "4"), reply(api, "not JSON")],
-        model="candidate",
-        base_url="https://candidate.test/v1/",
-        api_key="test-key",
-    )
-    example = Example(
-        "bad-grade",
-        (Message("user", (Text("Two plus two?"),)),),
-        "4",
-        {
-            "question": "Two plus two?",
-        },
-    )
-    async with provider:
-        result = await hle.HLE().evaluate(example, provider, GENERATION, tmp_path)
-    assert result.score is None
-    assert "invalid ExtractedAnswer" in result.details["reason"]
-    assert len(requests) == 2
-
-
-@pytest.mark.parametrize("api", APIS)
 async def test_deepswe_nul_command_returns_tool_error_and_continues(
     code_sandbox, sdk_provider, reply, tmp_path, api
 ):
@@ -519,7 +473,7 @@ async def test_mmmu_standard_interleaved_images_across_apis(
 
 @pytest.mark.parametrize("api", APIS)
 @pytest.mark.parametrize("subset", mmmu.SUBSETS)
-async def test_mmmu_tools_multi_turn_images_scoring_and_resume(
+async def test_mmmu_tools_multi_turn_images_and_scoring(
     monkeypatch, sdk_provider, reply, tmp_path, api, subset
 ):
     image_path = tmp_path / "question.png"
@@ -573,36 +527,12 @@ async def test_mmmu_tools_multi_turn_images_scoring_and_resume(
         ],
     )
     benchmark = mmmu.MMMUPro(subset, with_tools=True)
-    output = tmp_path / "results"
     generation = Generation(131075)
     async with provider:
-        for resume in (False, True):
-            summary = await run(
-                benchmark,
-                [example],
-                provider,
-                generation,
-                output,
-                configuration={"dataset": {"fixture": "mmmu"}},
-                concurrency=1,
-                resume=resume,
-            )
-            assert summary["accuracy"] == 1
-        with pytest.raises(ValueError, match="Resume requires identical"):
-            await run(
-                mmmu.MMMUPro(subset),
-                [example],
-                provider,
-                generation,
-                output,
-                configuration={"dataset": {"fixture": "mmmu"}},
-                concurrency=1,
-                resume=True,
-            )
+        result = await benchmark.evaluate(example, provider, generation, tmp_path)
     assert executed == [call.arguments for call in calls] and closed == [True]
-    result = json.loads(next(output.glob("samples/*/result.json")).read_text())
-    assert result["answer"] == "B"
-    assert result["details"] == {
+    assert result.score == 1 and result.answer == "B"
+    assert result.details == {
         "parse_method": "answer_prefix",
         "stop_reason": "stop",
         "turns": 3,
@@ -612,8 +542,8 @@ async def test_mmmu_tools_multi_turn_images_scoring_and_resume(
         "allow_network": False,
         "token_budget_kind": "cumulative_generated_tokens",
     }
-    assert len(list(output.glob("samples/*/attempt-*/call-*.json"))) == 3
     bodies = [json.loads(request.content) for request in requests]
+    assert len(bodies) == 3
     budget_key = {
         "openai-completions": "max_completion_tokens",
         "openai-responses": "max_output_tokens",

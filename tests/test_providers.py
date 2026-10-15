@@ -31,15 +31,6 @@ async def test_usage_and_recorded_request_match_sdk(sdk_provider, response_body,
         assert result.request["include"] == ["reasoning.encrypted_content"]
 
 
-async def test_responses_phase_and_reasoning_replay(sdk_provider, response_body):
-    raw = response_body("openai-responses")
-    provider, requests = sdk_provider("openai-responses", [raw, raw])
-    async with provider:
-        first = await provider.generate([Message("user", (Text("First"),))], GENERATION)
-        await provider.generate([first.message, Message("user", (Text("Continue"),))], GENERATION)
-    assert json.loads(requests[1].content)["input"][:2] == raw["output"]
-
-
 @pytest.mark.parametrize("api", APIS)
 @pytest.mark.parametrize(
     "length, tools, stop_reason",

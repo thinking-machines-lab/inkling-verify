@@ -198,7 +198,7 @@ class PythonSandbox(Container):
         async with self._lock:
             process = self._process
             assert process is not None and process.stdin is not None and process.stdout is not None
-            request = {"code": args["code"], "timeout": float(timeout), "max_output_bytes": 16384}
+            request = {"code": args["code"], "timeout": float(timeout)}
             try:
                 async with asyncio.timeout(timeout + 10):
                     process.stdin.write((json.dumps(request) + "\n").encode())
@@ -234,10 +234,10 @@ class PythonSandbox(Container):
                     ),
                 )
         result = json.loads(raw)
-        parts = [_truncate_text(result[key], 16384).rstrip("\n") for key in ("stdout", "stderr")]
+        parts = [_truncate_text(result[key]).rstrip("\n") for key in ("stdout", "stderr")]
         text = "\n".join(part for part in parts if part)
         if result["exit_code"] == 0 and result["result_repr"] is not None:
-            text = text + ("\n" if text else "") + _truncate_text(result["result_repr"], 16384)
+            text = text + ("\n" if text else "") + _truncate_text(result["result_repr"])
         content: list[Text | Image] = [Text(text)] if text else []
         if len(result["images"]) > MAX_IMAGES_PER_CELL:
             raise ValueError("Python kernel exceeded its image count limit")

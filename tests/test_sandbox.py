@@ -143,7 +143,7 @@ async def test_deepswe_rejects_non_x86_podman_host_before_starting_images(
         ("info", "--format", "{{.Host.Security.Rootless}}"),
         ("info", "--format", "{{.Host.Arch}}"),
     ]
-    assert not sandbox._created
+    assert not sandbox._active
 
 
 @pytest.mark.parametrize("memory", ["0", "-1", "true", '"8192"'])
@@ -250,7 +250,7 @@ async def test_deepswe_isolates_solver_and_verifier(
     if not failure:
         grading = next(a for a in calls if a[-1].endswith("bash /tests/test.sh"))
         assert grading[-3:-1] == ("bash", "-c")
-    assert not sandbox._created
+    assert not sandbox._active
 
 
 async def test_verifier_shell_preserves_image_virtualenv_path(tmp_path, monkeypatch):
@@ -315,7 +315,7 @@ async def test_deepswe_checks_pinned_image_base_commit(deepswe_task, monkeypatch
     with pytest.raises(RuntimeError, match="does not match the task's base commit"):
         async with sandbox:
             pytest.fail("unexpected mismatched image")
-    assert not sandbox._created
+    assert not sandbox._active
 
 
 async def test_image_tools_container_uses_native_platform(tmp_path, monkeypatch):

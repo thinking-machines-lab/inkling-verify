@@ -78,7 +78,7 @@ class Container:
         self.work_dir = work_dir
         self.allow_network = allow_network
         self.name = "inkling-verify-" + uuid.uuid4().hex
-        self._created: list[str] = []
+        self._active = False
 
     async def _podman(self, *args: str, **kwargs: Any) -> CommandResult:
         try:
@@ -133,17 +133,12 @@ class Container:
             "-c",
             "while :; do sleep 3600; done",
         )
-        self._created.append(self.name)
+        self._active = True
 
     async def close(self) -> None:
-        failures = []
-        while self._created:
-            name = self._created.pop()
-            result = await command("podman", "rm", "--force", name, timeout=60)
-            if result.exit_code:
-                failures.append(result.stderr)
-        if failures:
-            raise RuntimeError("Podman cleanup failed: " + "\n".join(failures))
+        if self._active:
+            await self._podman("rm", "--force", self.name, timeout=60)
+            self._active = False
 
     async def run(
         self,
@@ -266,8 +261,7 @@ class DeepSWESandbox(Container):
         await self._podman("cp", self.name + ":/logs/artifacts/model.patch", str(candidate))
         if candidate.is_symlink() or not candidate.is_file():
             raise RuntimeError("DeepSWE patch collection must produce a regular file")
-        await self._podman("rm", "--force", self.name)
-        self._created.remove(self.name)
+        await self.close()
         self.name += "-verifier"
         image = await self._verifier_image()
         await self._start_container(image, verifier["environment"], platform=PLATFORM)

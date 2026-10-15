@@ -68,14 +68,14 @@ python -m inkling_verify.benchmarks.mmau run \
   --output results/mmau
 ```
 
-### HLE without tools
+### HLE
 
 2,158 text-only questions. The model judges its own answers by default;
 use `--judge-model` to select a separate judge.
 
 ```bash
-python -m inkling_verify.benchmarks.hle_no_tools prepare
-python -m inkling_verify.benchmarks.hle_no_tools run \
+python -m inkling_verify.benchmarks.hle prepare
+python -m inkling_verify.benchmarks.hle run \
   --api openai-completions --model MODEL --base-url https://API_HOST/v1 \
   --output results/hle
 ```

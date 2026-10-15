@@ -56,8 +56,7 @@ def test_kernel_protocol_preserves_state_images_and_recovers_from_cell_failures(
         "value + 1",
     ]
     requests = "".join(
-        json.dumps({"code": code, "timeout": 0.05 if index == 4 else 5, "max_output_bytes": 16384})
-        + "\n"
+        json.dumps({"code": code, "timeout": 0.05 if index == 4 else 5}) + "\n"
         for index, code in enumerate(cells)
     )
     kernel = tmp_path / "python_kernel.py"
@@ -73,7 +72,6 @@ def test_kernel_protocol_preserves_state_images_and_recovers_from_cell_failures(
     )
     ready, *results = map(json.loads, process.stdout.splitlines())
     assert ready == {"ready": True}
-    assert [result["exec_count"] for result in results] == list(range(1, 8))
     assert results[0]["stdout"] == "hello\n"
     assert results[0]["result_repr"] == results[6]["result_repr"] == "42"
     assert len(results[1]["images"]) == 1
@@ -159,7 +157,7 @@ async def test_execution_preserves_rendering_and_uses_stdin_as_data(tmp_path, ex
     result = await sandbox.execute(json.dumps({"code": code, "timeout": 90}))
     assert result == (Text(expected), Image(image, "image/png"))
     request = json.loads(sandbox._process.stdin.write.call_args.args[0])
-    assert request == {"code": code, "timeout": 60.0, "max_output_bytes": 16384}
+    assert request == {"code": code, "timeout": 60.0}
 
 
 @pytest.mark.parametrize("with_image", [False, True])
@@ -223,7 +221,7 @@ async def test_sigsegv_restarts_kernel_reports_lost_state_and_allows_next_cell(t
     assert "in-memory state (variables, imports) was lost" in result[0].text
     assert json.loads((tmp_path / "python-kernel-crashes.jsonl").read_text()) == {
         "exit_code": 139,
-        "request": {"code": code, "timeout": 60.0, "max_output_bytes": 16384},
+        "request": {"code": code, "timeout": 60.0},
     }
     sandbox._reap_kernel.assert_awaited_once_with()
     sandbox._start_kernel.assert_awaited_once_with()

@@ -7,8 +7,7 @@ from dataclasses import asdict, replace
 import pytest
 
 from inkling_verify import cli
-from inkling_verify.benchmarks import deepswe, mmau, niah
-from inkling_verify.benchmarks import hle_no_tools as hle
+from inkling_verify.benchmarks import deepswe, hle, mmau, niah
 from inkling_verify.benchmarks import mmmu_pro as mmmu
 from inkling_verify.types import Example, Generation
 
@@ -24,6 +23,27 @@ BENCHMARKS = (
 )
 
 
+@pytest.fixture
+def invoke(monkeypatch):
+    def invoke(module, *options, command="run"):
+        captured = {}
+
+        async def evaluate(benchmark, args, **kwargs):
+            captured.update(benchmark=benchmark, args=args, **kwargs)
+
+        monkeypatch.setattr(module, "evaluate", evaluate)
+        if module is niah:
+            monkeypatch.setattr(niah, "write_grid", lambda output: None)
+        arguments = ["benchmark.py", command]
+        if command == "run":
+            arguments += ["--api", "anthropic", "--model", "candidate", "--output", "results"]
+        monkeypatch.setattr(sys, "argv", [*arguments, *options])
+        module.main()
+        return captured
+
+    return invoke
+
+
 @pytest.mark.parametrize(
     "module,benchmark_type,subset,command,effort",
     [
@@ -34,41 +54,27 @@ BENCHMARKS = (
     ],
 )
 def test_benchmark_entrypoint_dispatches_prepare_and_run(
-    monkeypatch, tmp_path, module, benchmark_type, subset, command, effort
+    monkeypatch, tmp_path, invoke, module, benchmark_type, subset, command, effort
 ):
     captured = {}
 
     def prepare(self, data_dir, *args, **kwargs):
         captured["prepare"] = ((self.name, data_dir, *args), kwargs)
 
-    async def evaluate(benchmark, args, **kwargs):
-        captured["run"] = (benchmark, args)
-        if module is deepswe:
-            assert kwargs["benchmark_configuration"] == {
-                "agent_timeout_seconds": 43200,
-                "image_manifest_sha256": deepswe.IMAGE_MANIFEST_SHA256,
-                "allow_network": False,
-            }
-
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(module, "evaluate", evaluate)
-    if module is niah:
-        monkeypatch.setattr(niah, "write_grid", lambda output: None)
     monkeypatch.setattr(benchmark_type, "prepare", prepare)
     expected_name = (benchmark_type() if subset is None else benchmark_type(subset)).name
     api = "openai-completions" if module is mmau else "anthropic"
-    argv = ["benchmark.py", command, "--data-dir", "prepared"]
+    argv = ["--data-dir", "prepared"]
     if subset is not None:
         argv.extend(["--subset", subset])
     if command == "run":
-        argv.extend(["--api", api, "--model", "candidate", "--output", "results"])
+        argv.extend(["--api", api])
         if effort is not None:
             argv.extend(["--reasoning-effort", effort])
     elif module is niah:
         argv.extend(["--tokenizer", "model"])
-    monkeypatch.setattr(sys, "argv", argv)
-
-    module.main()
+    result = invoke(module, *argv, command=command)
 
     if command == "prepare":
         expected = (expected_name, tmp_path / "prepared")
@@ -82,8 +88,8 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
             }
         assert captured == {"prepare": (expected, options)}
     else:
-        assert set(captured) == {"run"}
-        benchmark, args = captured["run"]
+        assert captured == {}
+        benchmark, args = result["benchmark"], result["args"]
         assert isinstance(benchmark, benchmark_type)
         assert benchmark.name == expected_name
         assert args.api == api
@@ -95,6 +101,11 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
         if module is mmau:
             assert args.max_output_tokens is None
         if module is deepswe:
+            assert result["benchmark_configuration"] == {
+                "agent_timeout_seconds": 43200,
+                "image_manifest_sha256": deepswe.IMAGE_MANIFEST_SHA256,
+                "allow_network": False,
+            }
             assert benchmark.allow_network is False
             assert args.max_output_tokens == 1_000_000
             assert args.concurrency == 4
@@ -108,10 +119,9 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
             ) == (4096, 0, None, effort or "none", 4)
 
 
-def test_deepswe_prepare_rejects_subsets(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["run_deepswe.py", "prepare", "--subset", "deepswe"])
+def test_deepswe_prepare_rejects_subsets(invoke, capsys):
     with pytest.raises(SystemExit) as error:
-        deepswe.main()
+        invoke(deepswe, "--subset", "deepswe", command="prepare")
     assert error.value.code == 2
     assert "unrecognized arguments: --subset" in capsys.readouterr().err
 
@@ -120,32 +130,8 @@ def test_deepswe_prepare_rejects_subsets(monkeypatch, capsys):
     "overrides",
     [[], ["--max-output-tokens", "1234", "--concurrency", "2", "--reasoning-effort", "low"]],
 )
-def test_mmmu_tools_defaults_and_overrides(monkeypatch, overrides):
-    captured = {}
-
-    async def evaluate(benchmark, args):
-        captured.update(benchmark=benchmark, args=args)
-
-    monkeypatch.setattr(mmmu, "evaluate", evaluate)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run_mmmu_pro.py",
-            "run",
-            "--with-tools",
-            "--subset",
-            "standard-4",
-            "--api",
-            "anthropic",
-            "--model",
-            "candidate",
-            "--output",
-            "results",
-            *overrides,
-        ],
-    )
-    mmmu.main()
+def test_mmmu_tools_defaults_and_overrides(invoke, overrides):
+    captured = invoke(mmmu, "--with-tools", "--subset", "standard-4", *overrides)
     assert captured["benchmark"].with_tools is True
     assert captured["benchmark"].name == "mmmu-pro-standard-4-with-tools"
     assert captured["benchmark"].cache_name == "mmmu-pro-standard-4"
@@ -311,45 +297,22 @@ async def test_cli_records_dataset_and_endpoint_without_secrets_and_marks_smoke(
 
 
 @pytest.mark.parametrize("module", [deepswe, hle, mmau, mmmu, niah])
-def test_only_deepswe_accepts_with_network(monkeypatch, module):
-    async def evaluate(benchmark, args, **kwargs):
-        assert isinstance(benchmark, deepswe.DeepSWE)
-        assert benchmark.allow_network is True
-        assert kwargs["benchmark_configuration"]["allow_network"] is True
-
-    monkeypatch.setattr(module, "evaluate", evaluate)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "benchmark.py",
-            "run",
-            "--api",
-            "anthropic",
-            "--model",
-            "candidate",
-            "--output",
-            "results",
-            "--with-network",
-        ],
-    )
+def test_only_deepswe_accepts_with_network(invoke, module):
     if module is deepswe:
-        module.main()
+        captured = invoke(module, "--with-network")
+        assert isinstance(captured["benchmark"], deepswe.DeepSWE)
+        assert captured["benchmark"].allow_network is True
+        assert captured["benchmark_configuration"]["allow_network"] is True
     else:
         with pytest.raises(SystemExit) as error:
-            module.main()
+            invoke(module, "--with-network")
         assert error.value.code == 2
 
 
 @pytest.mark.parametrize("api", ["openai-responses", "anthropic"])
-def test_mmau_rejects_unsupported_audio_apis(monkeypatch, capsys, api):
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["run_mmau.py", "run", "--api", api, "--model", "m", "--output", "results"],
-    )
+def test_mmau_rejects_unsupported_audio_apis(invoke, capsys, api):
     with pytest.raises(SystemExit) as error:
-        mmau.main()
+        invoke(mmau, "--api", api)
     assert error.value.code == 2
     assert "audio-capable Chat Completions" in capsys.readouterr().err
 
@@ -426,7 +389,7 @@ async def test_missing_api_key_fails_before_provider_creation(monkeypatch, evalu
 )
 @pytest.mark.parametrize("judge_effort", [None, "max", "none"])
 def test_hle_cli_resolves_judge_independently(
-    monkeypatch,
+    invoke,
     candidate_api,
     arguments,
     expected_api,
@@ -435,41 +398,26 @@ def test_hle_cli_resolves_judge_independently(
     expected_generation,
     judge_effort,
 ):
-    captured = {}
     if judge_effort is not None:
         arguments = [*arguments, "--judge-reasoning-effort", judge_effort]
         expected_generation = replace(expected_generation, reasoning_effort=judge_effort)
 
-    async def evaluate(benchmark, args, **kwargs):
-        captured.update(kwargs)
-        assert args.reasoning_effort == "max"
-        assert benchmark.judge_generation == kwargs["judge_generation"]
-
-    monkeypatch.setattr(hle, "evaluate", evaluate)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run_hle_no_tools.py",
-            "run",
-            "--api",
-            candidate_api,
-            "--model",
-            "candidate",
-            "--base-url",
-            "https://candidate/v1",
-            "--api-key-env",
-            "CANDIDATE_KEY",
-            "--temperature",
-            "none",
-            "--top-p",
-            "none",
-            "--output",
-            "results",
-            *arguments,
-        ],
+    captured = invoke(
+        hle,
+        "--api",
+        candidate_api,
+        "--base-url",
+        "https://candidate/v1",
+        "--api-key-env",
+        "CANDIDATE_KEY",
+        "--temperature",
+        "none",
+        "--top-p",
+        "none",
+        *arguments,
     )
-    hle.main()
+    assert captured["args"].reasoning_effort == "max"
+    assert captured["benchmark"].judge_generation == captured["judge_generation"]
     judge = captured["judge_args"]
     if expected_api is None:
         assert judge is None
@@ -482,25 +430,9 @@ def test_hle_cli_resolves_judge_independently(
 
 
 @pytest.mark.parametrize("top_p", ["0", "1.1"])
-def test_hle_cli_rejects_invalid_judge_top_p(monkeypatch, top_p):
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run_hle_no_tools.py",
-            "run",
-            "--api",
-            "anthropic",
-            "--model",
-            "candidate",
-            "--output",
-            "results",
-            "--judge-top-p",
-            top_p,
-        ],
-    )
+def test_hle_cli_rejects_invalid_judge_top_p(invoke, top_p):
     with pytest.raises(ValueError, match="judge-top-p"):
-        hle.main()
+        invoke(hle, "--judge-top-p", top_p)
 
 
 @pytest.mark.parametrize("external", [False, True])

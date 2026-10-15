@@ -46,6 +46,47 @@ def add_api_arguments(parser: argparse.ArgumentParser, *, prefix: str = "") -> N
     )
 
 
+def add_generation_arguments(
+    parser: argparse.ArgumentParser, *, prefix: str = "", defaults: Generation | None = None
+) -> None:
+    parser.add_argument(
+        f"--{prefix}max-output-tokens",
+        type=positive,
+        default=defaults.max_tokens if defaults else None,
+        help="output token budget, cumulative across tool turns",
+    )
+    defaults = defaults or Generation(262144)
+    for name in ("temperature", "top_p"):
+        parser.add_argument(
+            f"--{prefix}{name.replace('_', '-')}",
+            type=optional_float,
+            default=getattr(defaults, name),
+            metavar="FLOAT|none",
+        )
+    parser.add_argument(
+        f"--{prefix}reasoning-effort",
+        choices=("default", "none", "low", "medium", "high", "max"),
+        default=defaults.reasoning_effort,
+    )
+
+
+def generation_settings(args: argparse.Namespace, *, prefix: str = "") -> Generation:
+    values = {
+        name: getattr(args, prefix.replace("-", "_") + name)
+        for name in ("max_output_tokens", "temperature", "top_p", "reasoning_effort")
+    }
+    if values["top_p"] is not None and not 0 < values["top_p"] <= 1:
+        raise ValueError(f"{prefix}top-p must be in (0, 1], or 'none'")
+    return Generation(
+        max_tokens=values["max_output_tokens"] or 262144,
+        temperature=values["temperature"],
+        top_p=values["top_p"],
+        reasoning_effort=None
+        if values["reasoning_effort"] == "default"
+        else values["reasoning_effort"],
+    )
+
+
 def parser(
     benchmark: str,
 ) -> tuple[argparse.ArgumentParser, argparse.ArgumentParser, argparse.ArgumentParser]:
@@ -58,18 +99,7 @@ def parser(
     evaluate.add_argument("--data-dir", type=Path, default=Path("data"))
     evaluate.add_argument("--output", type=Path, required=True)
     evaluate.add_argument("--concurrency", type=positive)
-    evaluate.add_argument(
-        "--max-output-tokens",
-        type=positive,
-        help="output token budget, cumulative across tool turns",
-    )
-    evaluate.add_argument("--temperature", type=optional_float, default=1.0, metavar="FLOAT|none")
-    evaluate.add_argument("--top-p", type=optional_float, default=1.0, metavar="FLOAT|none")
-    evaluate.add_argument(
-        "--reasoning-effort",
-        choices=("default", "none", "low", "medium", "high", "max"),
-        default="max",
-    )
+    add_generation_arguments(evaluate)
     evaluate.add_argument(
         "--limit", type=positive, help="first N cases for a partial-dataset smoke test"
     )
@@ -129,14 +159,7 @@ async def evaluate(
     dataset_size = len(examples)
     if args.limit is not None:
         examples = examples[: args.limit]
-    generation = Generation(
-        max_tokens=args.max_output_tokens or 262144,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        reasoning_effort=None if args.reasoning_effort == "default" else args.reasoning_effort,
-    )
-    if args.top_p is not None and not 0 < args.top_p <= 1:
-        raise ValueError("top-p must be in (0, 1], or 'none'")
+    generation = generation_settings(args)
     candidate_config, api_key = provider_configuration(args)
     configuration = {
         **(benchmark_configuration or {}),
