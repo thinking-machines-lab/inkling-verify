@@ -125,6 +125,27 @@ async def test_missing_podman_reports_setup_error_before_start(sandbox, monkeypa
     sandbox.start.assert_not_awaited()
 
 
+@pytest.mark.parametrize("host_arch", ["arm64", "ppc64le", ""])
+async def test_deepswe_rejects_non_x86_podman_host_before_starting_images(
+    deepswe_task, tmp_path, monkeypatch, host_arch
+):
+    podman = AsyncMock(
+        side_effect=[CommandResult("true\n", "", 0, 0), CommandResult(host_arch, "", 0, 0)]
+    )
+    monkeypatch.setattr(module, "command", podman)
+    sandbox = DeepSWESandbox(deepswe_task, tmp_path / "result")
+
+    with pytest.raises(RuntimeError, match="native x86-64 Podman host"):
+        async with sandbox:
+            pytest.fail("Unsupported Podman hosts must fail before starting a task")
+
+    assert [call.args[1:] for call in podman.await_args_list] == [
+        ("info", "--format", "{{.Host.Security.Rootless}}"),
+        ("info", "--format", "{{.Host.Arch}}"),
+    ]
+    assert not sandbox._created
+
+
 @pytest.mark.parametrize("memory", ["0", "-1", "true", '"8192"'])
 @pytest.mark.parametrize("original", ["8192", "12288"])
 def test_deepswe_rejects_invalid_resource_limits(deepswe_task, memory, original):
@@ -148,7 +169,8 @@ async def test_deepswe_isolates_solver_and_verifier(
     async def podman(*args, **kwargs):
         calls.append(args)
         if args[1] == "info":
-            return CommandResult("true\n", "", 0, 0.1)
+            value = "amd64\n" if args[-1] == "{{.Host.Arch}}" else "true\n"
+            return CommandResult(value, "", 0, 0.1)
         if args[-1] == "git rev-parse HEAD":
             return CommandResult("a" * 40, "", 0, 0.1)
         if (failure == "collect" and args[-1] == hook) or (
@@ -173,6 +195,7 @@ async def test_deepswe_isolates_solver_and_verifier(
 
     async def evaluate():
         async with sandbox:
+            assert calls[1] == ("podman", "info", "--format", "{{.Host.Arch}}")
             assert not any(a[1] == "network" for a in calls)
             assert not any(a[1] == "build" for a in calls)
             assert (work / "logs/artifacts").is_dir()
@@ -283,7 +306,8 @@ async def test_deepswe_rejects_unpinned_images_without_building(deepswe_task, mo
 async def test_deepswe_checks_pinned_image_base_commit(deepswe_task, monkeypatch):
     async def podman(*args, **kwargs):
         if args[1] == "info":
-            return CommandResult("true\n", "", 0, 0)
+            value = "amd64\n" if args[-1] == "{{.Host.Arch}}" else "true\n"
+            return CommandResult(value, "", 0, 0)
         return CommandResult("b" * 40 if args[-1] == "git rev-parse HEAD" else "", "", 0, 0)
 
     monkeypatch.setattr(module, "command", podman)

@@ -33,9 +33,7 @@ Scores are saved in `summary.json` under the output directory.
 113 coding tasks, graded by testing the model's committed patch in a fresh
 container. Networking is disabled by default; add `--with-network` to enable it.
 
-DeepSWE uses pinned x86-64 images; running it on ARM requires x86 emulation
-configured in the container host (QEMU 10.0.3+ with binfmt on Linux, or Rosetta in
-the Podman VM on Apple Silicon).
+DeepSWE requires a native x86-64 Podman host and uses pinned x86-64 images.
 
 ```bash
 python -m inkling_verify.benchmarks.deepswe prepare

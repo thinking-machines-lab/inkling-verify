@@ -187,6 +187,11 @@ class DeepSWESandbox(Container):
         self.solver_image = solver_image(self.config["environment"]["docker_image"])
 
     async def start(self) -> None:
+        host = await self._podman("info", "--format", "{{.Host.Arch}}", timeout=30)
+        if host.stdout.strip() != "amd64":
+            raise RuntimeError(
+                "DeepSWE requires a native x86-64 Podman host; ARM emulation is not supported"
+            )
         environment = self.config["environment"]
         await self._start_container(self.solver_image, environment, platform=PLATFORM)
         logs = self.work_dir / "logs"

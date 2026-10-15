@@ -1,4 +1,4 @@
-"""Use the original DeepSWE environments identically on x86 and emulated ARM."""
+"""Pinned DeepSWE environments for native x86-64 hosts."""
 
 from __future__ import annotations
 
