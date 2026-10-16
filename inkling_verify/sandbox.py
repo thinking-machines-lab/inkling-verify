@@ -230,20 +230,33 @@ class DeepSWESandbox(Container):
         assert self.base_commit is not None
         patch = await self._separate_verifier()
         verifier = self.config["verifier"]
-        test = await self.run(
-            "rm -rf /logs/verifier && mkdir -p /logs/verifier && "
-            "env LOG_FILE=/logs/verifier/test-output.log bash /tests/test.sh",
-            timeout=float(verifier.get("timeout_sec", 3600)),
-            output_limit=1024 * 1024,
-            login_shell=False,
-        )
-        (self.work_dir / "verifier.stdout").write_text(test.stdout)
-        (self.work_dir / "verifier.stderr").write_text(test.stderr)
+        timeout = float(verifier.get("timeout_sec", 3600))
+        deadline = asyncio.timeout(timeout)
+        started = time.monotonic()
+        test = None
+        try:
+            async with deadline:
+                test = await self.run(
+                    "rm -rf /logs/verifier && mkdir -p /logs/verifier && "
+                    "env LOG_FILE=/logs/verifier/test-output.log bash /tests/test.sh",
+                    timeout=timeout + 30,
+                    output_limit=1024 * 1024,
+                    login_shell=False,
+                )
+        except TimeoutError:
+            if not deadline.expired():
+                raise
+            await self._podman("kill", "--signal=KILL", self.name)
+        seconds = time.monotonic() - started
+        if test is not None:
+            (self.work_dir / "verifier.stdout").write_text(test.stdout)
+            (self.work_dir / "verifier.stderr").write_text(test.stderr)
         await self._podman("cp", self.name + ":/logs/verifier", str(self.work_dir / "verifier"))
-        reward = parse_reward(self.work_dir / "verifier")
+        reward = 0.0 if deadline.expired() else parse_reward(self.work_dir / "verifier")
         return reward, {
-            "verifier_exit_code": test.exit_code,
-            "verifier_seconds": test.execution_time,
+            "verifier_exit_code": test.exit_code if test is not None else None,
+            "verifier_seconds": seconds,
+            "verifier_timed_out": deadline.expired(),
             "patch_capture_exit_code": patch.exit_code,
             "base_commit": self.base_commit,
         }
