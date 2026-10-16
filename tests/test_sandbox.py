@@ -302,6 +302,73 @@ async def test_verifier_shell_preserves_image_virtualenv_path(tmp_path, monkeypa
     assert result.stdout == f"image virtualenv pytest\n{image_path}\n"
 
 
+@pytest.mark.parametrize("outcome", ["deadline", "early-timeout", "missing-reward", "kill", "cp"])
+async def test_verifier_deadline_scores_zero_only_after_stopping_and_collecting_logs(
+    deepswe_task, tmp_path, monkeypatch, outcome
+):
+    work = tmp_path / "result"
+    work.mkdir()
+    sandbox = DeepSWESandbox(deepswe_task, work)
+    sandbox.base_commit = "a" * 40
+    sandbox.config["verifier"]["timeout_sec"] = 0.01
+    events = []
+
+    async def separate():
+        events.append("prepare")
+        sandbox.name += "-verifier"
+        return CommandResult("", "", 0, 0)
+
+    async def run(*args, **kwargs):
+        events.append("run")
+        if outcome == "early-timeout":
+            raise TimeoutError("transport deadline")
+        if outcome == "missing-reward":
+            return CommandResult("grader crashed", "", 1, 0)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            events.append("cancelled")
+
+    async def podman(*args, **kwargs):
+        events.append(args[0])
+        if args[0] == "kill":
+            assert events[-2] == "cancelled"
+            assert args == ("kill", "--signal=KILL", sandbox.name)
+        if args[0] == outcome:
+            raise RuntimeError(f"{outcome} failed")
+        if args[0] == "cp":
+            assert args == ("cp", sandbox.name + ":/logs/verifier", str(work / "verifier"))
+            (work / "verifier").mkdir()
+            (work / "verifier/run.log").write_text("partial test output")
+        return CommandResult("", "", 0, 0)
+
+    monkeypatch.setattr(sandbox, "_separate_verifier", separate)
+    monkeypatch.setattr(sandbox, "run", run)
+    monkeypatch.setattr(sandbox, "_podman", podman)
+    if outcome == "deadline":
+        score, details = await asyncio.wait_for(sandbox.grade(), 1)
+        assert score == 0
+        assert details["verifier_timed_out"] is True
+        assert details["verifier_exit_code"] is None
+        assert details["verifier_seconds"] >= sandbox.config["verifier"]["timeout_sec"]
+        assert (work / "verifier/run.log").read_text() == "partial test output"
+        assert events == ["restart", "prepare", "run", "cancelled", "kill", "cp"]
+    elif outcome == "early-timeout":
+        with pytest.raises(TimeoutError, match="transport deadline"):
+            await sandbox.grade()
+        assert events == ["restart", "prepare", "run"]
+    elif outcome == "missing-reward":
+        with pytest.raises(RuntimeError, match="did not produce reward.json"):
+            await sandbox.grade()
+        assert events == ["restart", "prepare", "run", "cp"]
+    else:
+        with pytest.raises(RuntimeError, match=f"{outcome} failed"):
+            await asyncio.wait_for(sandbox.grade(), 1)
+        assert events == ["restart", "prepare", "run", "cancelled", "kill"] + (
+            ["cp"] if outcome == "cp" else []
+        )
+
+
 @pytest.mark.parametrize(
     "original, replacement",
     [
