@@ -1,13 +1,14 @@
 import json
 from dataclasses import asdict
 from functools import partial
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
-from inkling_verify import providers
+from inkling_verify import mini_swe, providers
 from inkling_verify.benchmarks import deepswe
 from inkling_verify.sandbox import CommandResult
 from inkling_verify.types import ToolCall
@@ -17,6 +18,7 @@ from inkling_verify.types import ToolCall
 def code_sandbox(monkeypatch):
     class Sandbox:
         def __init__(self):
+            self.name = "test-sandbox"
             self.commands = []
             self.graded = False
 
@@ -25,10 +27,6 @@ def code_sandbox(monkeypatch):
 
         async def __aexit__(self, *args):
             pass
-
-        async def run(self, command, *, workdir=None, timeout=300):
-            self.commands.append((command, workdir, timeout))
-            return CommandResult("/repo" if command == "pwd" else "fixed", "", 0, 0.01)
 
         async def grade(self):
             self.graded = True
@@ -41,6 +39,30 @@ def code_sandbox(monkeypatch):
         return sandbox
 
     monkeypatch.setattr(deepswe, "DeepSWESandbox", create)
+    monkeypatch.setattr(
+        mini_swe,
+        "command",
+        AsyncMock(
+            return_value=CommandResult(
+                json.dumps(
+                    {"system": "Linux", "release": "test", "version": "test", "machine": "x86_64"}
+                ),
+                "",
+                0,
+                0,
+            )
+        ),
+    )
+
+    async def execute(environment, action):
+        text = action["command"]
+        sandbox.commands.append(text)
+        output = "/repo" if text == "pwd" else "fixed"
+        if text.startswith("echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"):
+            output = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\nFixed.\n"
+        return {"output": output, "returncode": 0, "exception_info": ""}
+
+    monkeypatch.setattr(mini_swe.PodmanEnvironment, "_execute", execute)
     return sandbox
 
 

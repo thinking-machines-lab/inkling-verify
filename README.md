@@ -32,8 +32,9 @@ Accuracy averages all attempts.
 
 ### DeepSWE
 
-113 coding tasks, graded by testing the model's committed patch in a fresh
-container. Networking is disabled by default; add `--with-network` to enable it.
+113 coding tasks solved with Mini-SWE-Agent 2.4.6, graded by testing the model's
+committed patch in a fresh container. Networking is disabled by default;
+add `--with-network` to enable it.
 Each sample has a four-hour solve limit; override with `--timeout-seconds`.
 The example runs four samples per problem (452 attempts).
 

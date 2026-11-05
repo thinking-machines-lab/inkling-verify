@@ -151,20 +151,15 @@ class Container:
         self,
         text: str,
         *,
-        workdir: str | None = None,
         timeout: float = 300,
         output_limit: int = 16 * 1024,
         login_shell: bool = True,
     ) -> CommandResult:
         if not text or not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("A command and positive finite timeout are required")
-        flags = []
-        if workdir is not None:
-            flags.extend(("--workdir", workdir))
         return await command(
             "podman",
             "exec",
-            *flags,
             self.name,
             "timeout",
             "-s",
