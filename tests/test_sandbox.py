@@ -223,8 +223,7 @@ async def test_deepswe_isolates_solver_and_verifier(
             assert not copied_tests
             assert (work / "logs/artifacts").is_dir()
             assert ("podman", "cp", str(work / "logs"), solver + ":/") in calls
-            await sandbox.run("printf x", workdir="/app")
-            assert ("--workdir", "/app") == calls[-1][2:4]
+            await sandbox.run("printf x")
             assert calls[-1][-3:] == ("bash", "-lc", "printf x")
             result = await sandbox.grade()
             assert result[0] == 1

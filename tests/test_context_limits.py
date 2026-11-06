@@ -183,8 +183,9 @@ async def test_deepswe_context_limit_grades_existing_patch_and_keeps_recorded_us
         result = await DeepSWE().evaluate(example, recorded, GENERATION, tmp_path)
     turns = 1 if termination == "rejection" else 2
     assert result.score == 1 and code_sandbox.graded
-    assert code_sandbox.commands == [("fix", None, 300)]
-    assert result.answer == ("prior answer" if termination == "rejection" else "final answer")
+    assert code_sandbox.commands == ["fix"]
+    assert result.answer == ""
+    assert result.details["agent_exit_status"] == "ContextExhausted"
     assert result.details["stop_reason"] == "context_limit"
     assert result.details["turns"] == len(recorded.calls) == turns
     assert result.details["tool_calls"] == 1

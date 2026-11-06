@@ -14,10 +14,11 @@ from unittest.mock import AsyncMock
 import pytest
 from PIL import Image
 
-from inkling_verify import python_tools
-from inkling_verify.benchmarks import deepswe, hle, mmau, niah
+from inkling_verify import mini_swe, python_tools
+from inkling_verify.benchmarks import hle, mmau, niah
 from inkling_verify.benchmarks import mmmu_pro as mmmu
 from inkling_verify.benchmarks.deepswe import DeepSWE
+from inkling_verify.context_limits import OUTPUT_TOKEN_FIELDS
 from inkling_verify.types import Example, Generation, Message, Text, ToolCall
 from inkling_verify.types import Image as DisplayImage
 
@@ -346,7 +347,10 @@ async def test_deepswe_native_tool_loop_and_grading(
     first_response = reply(api, tool_text, tools=("pwd", "printf fixed"))
     provider, requests = sdk_provider(
         api,
-        [first_response, reply(api, "Fixed.")],
+        [
+            first_response,
+            reply(api, "Fixed.", tools=("echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",)),
+        ],
         model="candidate",
         base_url="https://candidate.test/v1/",
         api_key="test-key",
@@ -362,14 +366,19 @@ async def test_deepswe_native_tool_loop_and_grading(
     )
     async with provider:
         result = await DeepSWE().evaluate(example, provider, GENERATION, tmp_path)
-    assert result.score == 1 and result.answer == "Fixed."
-    assert result.details["turns"] == 2 and result.details["tool_calls"] == 2
+    assert result.score == 1 and result.answer == "Fixed.\n"
+    assert result.details["turns"] == 2 and result.details["tool_calls"] == 3
+    assert result.details["agent_exit_status"] == "Submitted"
     assert result.details["generated_tokens"] == 10
-    assert code_sandbox.commands == [("pwd", None, 300), ("printf fixed", None, 300)]
+    assert code_sandbox.commands == [
+        "pwd",
+        "printf fixed",
+        "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",
+    ]
     assert code_sandbox.graded
     bodies = [json.loads(request.content) for request in requests]
     assert len(bodies) == 2
-    expected_tool = deepswe.bash_tool()
+    expected_tool = mini_swe.BASH
     for body in bodies:
         tool = body["tools"][0]
         if api == "openai-completions":
@@ -381,56 +390,57 @@ async def test_deepswe_native_tool_loop_and_grading(
         )
     messages = conversation(bodies[1], api)
     if api == "openai-completions":
-        assert messages[1] == first_response["choices"][0]["message"]
-        results = [(message["tool_call_id"], message["content"]) for message in messages[2:]]
-        budget = bodies[1]["max_completion_tokens"]
+        assert messages[2] == first_response["choices"][0]["message"]
+        results = [(message["tool_call_id"], message["content"]) for message in messages[3:]]
     elif api == "openai-responses":
-        end = 1 + len(first_response["output"])
-        assert messages[1:end] == first_response["output"]
+        end = 2 + len(first_response["output"])
+        assert messages[2:end] == first_response["output"]
         results = [(message["call_id"], message["output"]) for message in messages[end:]]
-        budget = bodies[1]["max_output_tokens"]
     else:
         assert messages[1]["content"] == first_response["content"]
         assert len(messages) == 3
         results = [(block["tool_use_id"], block["content"]) for block in messages[2]["content"]]
-        budget = bodies[1]["max_tokens"]
-    assert budget == GENERATION.max_tokens - 5
+    assert bodies[1][OUTPUT_TOKEN_FIELDS[api]] == GENERATION.max_tokens - 5
     assert [call_id for call_id, _ in results] == ["call_1", "call_2"]
-    assert [json.loads(content)["stdout"] for _, content in results] == ["/repo", "fixed"]
+    assert [json.loads(content)["output"] for _, content in results] == ["/repo", "fixed"]
 
 
 @pytest.mark.parametrize("api", APIS)
-async def test_deepswe_nul_command_returns_tool_error_and_continues(
-    code_sandbox, sdk_provider, reply, tmp_path, api
+@pytest.mark.parametrize(
+    "length,feedback",
+    [
+        (False, "Every response needs to use the 'bash' tool"),
+        (True, "reached the output token limit"),
+    ],
+)
+async def test_deepswe_missing_tool_call_gets_upstream_correction(
+    code_sandbox, sdk_provider, reply, tmp_path, api, length, feedback
 ):
-    invalid = "printf 'prefix\x00suffix'"
     provider, requests = sdk_provider(
-        api, [reply(api, None, tools=(invalid, "pwd")), reply(api, "Fixed.")]
+        api,
+        [
+            reply(api, "Fixed.", length=length),
+            reply(api, None, tools=("echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",)),
+        ],
     )
-    example = Example("nul", (), "", {"task_dir": str(tmp_path), "suite": "deepswe"})
+    example = Example(
+        "fix",
+        (Message("user", (Text("Fix the defect."),)),),
+        "",
+        {"task_dir": str(tmp_path), "suite": "deepswe"},
+    )
     async with provider:
         result = await DeepSWE().evaluate(example, provider, GENERATION, tmp_path)
-    assert code_sandbox.commands == [("pwd", None, 300)]
+    assert code_sandbox.commands == ["echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]
     assert code_sandbox.graded and result.score == 1
-    assert result.details["turns"] == 2 and result.details["tool_calls"] == 2
-    second_request = json.loads(requests[1].content)
-    assert "command contains a NUL character; command was not executed" in json.dumps(
-        second_request
-    )
-
-
-@pytest.mark.parametrize("field", ["command", "workdir"])
-async def test_bash_rejects_nul_arguments_without_changing_valid_escapes(code_sandbox, field):
-    args = {"command": r"printf '\\0'", "workdir": "/repo"}
-    original = args.copy()
-    args[field] += "\x00"
-    result = await deepswe.run_bash(code_sandbox, json.dumps(args))
-    assert json.loads(result[0].text) == {
-        "error": f"{field} contains a NUL character; command was not executed"
-    }
-    assert code_sandbox.commands == []
-    await deepswe.run_bash(code_sandbox, json.dumps(original))
-    assert code_sandbox.commands == [(original["command"], "/repo", 300)]
+    assert result.details["turns"] == 2 and result.details["tool_calls"] == 1
+    assert result.details["generated_tokens"] == 10
+    bodies = [json.loads(request.content) for request in requests]
+    assert [body[OUTPUT_TOKEN_FIELDS[api]] for body in bodies] == [
+        GENERATION.max_tokens,
+        GENERATION.max_tokens - 5,
+    ]
+    assert feedback in user_text(bodies[1], api)
 
 
 @pytest.mark.parametrize("api", APIS)
@@ -544,12 +554,7 @@ async def test_mmmu_tools_multi_turn_images_and_scoring(
     }
     bodies = [json.loads(request.content) for request in requests]
     assert len(bodies) == 3
-    budget_key = {
-        "openai-completions": "max_completion_tokens",
-        "openai-responses": "max_output_tokens",
-        "anthropic": "max_tokens",
-    }[api]
-    assert [body[budget_key] for body in bodies] == [131072, 131070, 131065]
+    assert [body[OUTPUT_TOKEN_FIELDS[api]] for body in bodies] == [131072, 131070, 131065]
     first = bodies[0]
     system = (
         first["system"][0]["text"] if api == "anthropic" else conversation(first, api)[0]["content"]

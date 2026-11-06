@@ -103,6 +103,7 @@ def test_benchmark_entrypoint_dispatches_prepare_and_run(
             assert args.max_output_tokens is None
         if module is deepswe:
             assert result["benchmark_configuration"] == {
+                "agent": {"name": "mini-swe-agent", "version": "2.4.6"},
                 "agent_timeout_seconds": 14400,
                 "image_manifest_sha256": deepswe.IMAGE_MANIFEST_SHA256,
                 "allow_network": False,
