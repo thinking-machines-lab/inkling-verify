@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+import os
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -156,21 +157,32 @@ async def test_prompt_actions_and_observations_match_upstream(
     assert observed["elided_chars"] == len(output) - 10000
 
 
-async def test_failed_podman_exec_preserves_diagnostics(monkeypatch):
-    run = AsyncMock(
-        return_value=subprocess.CompletedProcess([], 255, b"partial", b"resource unavailable")
+@pytest.mark.parametrize("read_stdin", [False, True])
+async def test_failed_podman_exec_preserves_diagnostics(monkeypatch, tmp_path, read_stdin):
+    podman = tmp_path / "podman"
+    read = (
+        "payload = json.load(sys.stdin)\nassert payload['action']['command'] == 'x' * 1048576\n"
+        if read_stdin
+        else "os.close(0)\n"
     )
-    monkeypatch.setattr(mini_swe.anyio, "run_process", run)
+    podman.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "assert sys.argv[1:6] == ['exec', '-i', 'test', 'python3', '-c']\n"
+        + read
+        + "sys.stdout.write('partial')\n"
+        "sys.stderr.write('resource unavailable')\n"
+        "sys.exit(255)\n"
+    )
+    podman.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
     environment = mini_swe.PodmanEnvironment(SimpleNamespace(name="test"), {})
-    result = await environment._execute({"command": "echo hi"})
+    result = await environment._execute({"command": "x" * 1048576})
     assert result == {
         "output": "partialresource unavailable",
         "returncode": -1,
         "exception_info": "Podman exec exited 255",
     }
-    argv = run.call_args.args[0]
-    assert argv[:6] == ["podman", "exec", "-i", "test", "python3", "-c"]
-    assert json.loads(run.call_args.kwargs["input"])["action"] == {"command": "echo hi"}
 
 
 @pytest.mark.parametrize("error", ["invalid json", TimeoutError("unexpected transport timeout")])
