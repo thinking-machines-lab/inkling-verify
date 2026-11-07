@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import tempfile
 import textwrap
 from concurrent.futures import CancelledError
 from dataclasses import replace
@@ -156,12 +157,17 @@ class PodmanEnvironment(local.LocalEnvironment):
 
     async def _execute(self, action: dict[str, Any]) -> dict[str, Any]:
         try:
-            with anyio.fail_after(self.config.timeout + 60) as deadline:
+            with (
+                anyio.fail_after(self.config.timeout + 60) as deadline,
+                tempfile.TemporaryFile() as stdin,
+            ):
+                stdin.write(
+                    json.dumps({"config": self.config.model_dump(), "action": action}).encode()
+                )
+                stdin.seek(0)
                 result = await anyio.run_process(
                     ["podman", "exec", "-i", self.sandbox.name, "python3", "-c", self.script],
-                    input=json.dumps(
-                        {"config": self.config.model_dump(), "action": action}
-                    ).encode(),
+                    stdin=stdin,
                     check=False,
                 )
         except TimeoutError:
