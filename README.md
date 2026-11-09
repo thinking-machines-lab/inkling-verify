@@ -54,8 +54,8 @@ with 1,730 questions each. The example enables Python image tools that run in a
 Podman sandbox with networking disabled.
 
 ```bash
-python -m inkling_verify.benchmarks.mmmu_pro prepare --subset vision
-python -m inkling_verify.benchmarks.mmmu_pro run --subset vision --with-tools \
+python -m inkling_verify.benchmarks.mmmu_pro prepare --subset standard-10
+python -m inkling_verify.benchmarks.mmmu_pro run --subset standard-10 --with-tools \
   --api openai-completions --model MODEL --base-url https://API_HOST/v1 \
   --output results/mmmu-pro
 ```
